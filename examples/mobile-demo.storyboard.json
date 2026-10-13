@@ -1,0 +1,15 @@
+{
+  "url": "demo-app/index.html",
+  "device": "iphone",
+  "colorScheme": "light",
+  "leadIn": 0.8,
+  "steps": [
+    { "caption": { "text": "Add a task in one tap", "duration": 3 } },
+    { "click": "#new" },
+    { "type": { "selector": "#taskInput", "text": "Call the designer" } },
+    { "click": "#add", "after": 1.2 },
+    { "scroll": { "y": 500, "duration": 1.2 } },
+    { "click": "text=iOS App" },
+    { "wait": 1.0 }
+  ]
+}

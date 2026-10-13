@@ -1,0 +1,22 @@
+#!/bin/bash
+# Pretty Studio launcher. Lives on Master Storage; symlinked into ~/.local/bin by scripts/install.sh.
+# Resolves its own location so the whole install can move with the drive.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+HOME_DIR="$(cd -P "$(dirname "$SOURCE")/.." >/dev/null 2>&1 && pwd)"
+if [ -z "$HOME_DIR" ] || [ ! -d "$HOME_DIR/web-recorder" ]; then
+  echo '{"ok": false, "error": "Pretty Studio lives on Master Storage, which is not mounted. Plug in the drive (rear Thunderbolt port)."}'
+  exit 69
+fi
+BIN="$HOME_DIR/.build/release/pretty"
+[ -x "$BIN" ] || BIN="$HOME_DIR/.build/debug/pretty"
+if [ ! -x "$BIN" ]; then
+  echo "{\"ok\": false, \"error\": \"not built yet: run '$HOME_DIR/scripts/build.sh'\"}"
+  exit 69
+fi
+export PRETTY_HOME="$HOME_DIR"
+exec "$BIN" "$@"

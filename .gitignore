@@ -147,3 +147,12 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Pretty Studio (Swift package, app bundle, project renders)
+.build/
+.swiftpm/
+dist/
+node_modules/
+*.prettystudio/renders/
+.DS_Store
+.pretty-tmp-*

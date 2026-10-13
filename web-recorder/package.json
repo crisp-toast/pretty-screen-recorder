@@ -1,0 +1,10 @@
+{
+  "name": "pretty-web-recorder",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Storyboard-driven browser recorder for Pretty Studio (drives installed Google Chrome via playwright-core).",
+  "dependencies": {
+    "playwright-core": "1.63.0"
+  }
+}

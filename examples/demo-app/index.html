@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lumen — Tasks</title>
+<style>
+  :root { --bg:#f7f7f9; --panel:#fff; --ink:#16161a; --mute:#6b6b76; --line:#e7e7ec; --accent:#5b5bf6; --accent2:#e9e9ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; color:var(--ink); background:var(--bg); }
+  .app { display:grid; grid-template-columns: 240px 1fr; min-height:100vh; }
+  aside { background:#fbfbfd; border-right:1px solid var(--line); padding:22px 14px; }
+  .brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:17px; padding:0 8px 18px; }
+  .logo { width:28px; height:28px; border-radius:8px; background:conic-gradient(from 200deg,#5b5bf6,#c04bff,#ff7a59,#5b5bf6); }
+  nav a { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px; color:var(--ink); text-decoration:none; font-weight:500; }
+  nav a.on { background:var(--accent2); color:var(--accent); }
+  nav a:hover { background:#f0f0f5; }
+  .dot { width:8px; height:8px; border-radius:50%; }
+  main { padding:28px 40px; }
+  header { display:flex; align-items:center; gap:14px; margin-bottom:22px; }
+  h1 { font-size:26px; margin:0; letter-spacing:-0.02em; }
+  .search { margin-left:auto; display:flex; align-items:center; gap:8px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:8px 12px; width:280px; }
+  .search input { border:0; outline:0; font:inherit; width:100%; background:transparent; }
+  button.primary { background:var(--accent); color:#fff; border:0; border-radius:10px; padding:10px 16px; font:600 14px/1 inherit; cursor:pointer; box-shadow:0 1px 2px rgba(0,0,0,.08); }
+  button.primary:hover { filter:brightness(1.07); }
+  .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:22px; }
+  .stat { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px 18px; }
+  .stat b { display:block; font-size:24px; letter-spacing:-0.02em; }
+  .stat span { color:var(--mute); font-size:13px; }
+  .list { background:var(--panel); border:1px solid var(--line); border-radius:14px; overflow:hidden; }
+  .row { display:flex; align-items:center; gap:12px; padding:14px 18px; border-top:1px solid var(--line); cursor:pointer; transition: background .15s; }
+  .row:first-child { border-top:0; }
+  .row:hover { background:#fafafe; }
+  .check { width:20px; height:20px; border-radius:6px; border:2px solid #c9c9d6; display:grid; place-items:center; transition:all .2s; }
+  .row.done .check { background:var(--accent); border-color:var(--accent); }
+  .row.done .check::after { content:"✓"; color:#fff; font-size:13px; font-weight:700; }
+  .row.done .title { color:var(--mute); text-decoration:line-through; }
+  .tag { margin-left:auto; font-size:12px; font-weight:600; padding:3px 9px; border-radius:99px; }
+  .t1 { background:#e9f7ef; color:#1f8a4c; } .t2 { background:#fff3e6; color:#c25e00; } .t3 { background:#eef0ff; color:#4a4ae0; }
+  .modal-bg { position:fixed; inset:0; background:rgba(20,20,30,.28); display:none; align-items:center; justify-content:center; backdrop-filter: blur(3px); }
+  .modal-bg.on { display:flex; animation: fade .2s ease; }
+  .modal { background:#fff; border-radius:16px; width:440px; padding:22px; box-shadow:0 20px 60px rgba(0,0,0,.25); animation: pop .25s cubic-bezier(.2,1.4,.4,1); }
+  .modal h2 { margin:0 0 14px; font-size:18px; }
+  .modal input { width:100%; font:inherit; padding:11px 12px; border:1px solid var(--line); border-radius:10px; outline:none; }
+  .modal input:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent2); }
+  .modal .actions { display:flex; justify-content:flex-end; gap:10px; margin-top:16px; }
+  .ghost { background:transparent; border:1px solid var(--line); border-radius:10px; padding:10px 14px; font:600 14px/1 inherit; cursor:pointer; }
+  .toast { position:fixed; bottom:28px; left:50%; transform:translateX(-50%) translateY(20px); opacity:0; background:#16161a; color:#fff; padding:12px 18px; border-radius:12px; font-weight:600; transition:all .3s; }
+  .toast.on { opacity:1; transform:translateX(-50%) translateY(0); }
+  .section { margin-top:26px; }
+  .section h3 { margin:0 0 12px; font-size:15px; color:var(--mute); text-transform:uppercase; letter-spacing:.06em; }
+  .cards { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
+  .card { height:120px; border-radius:14px; background:linear-gradient(135deg,#eef0ff,#fdf0ff); border:1px solid var(--line); padding:16px; font-weight:600; }
+  @keyframes fade { from { opacity:0 } } @keyframes pop { from { transform:scale(.94); opacity:0 } }
+  @media (max-width: 700px) {
+    .app { grid-template-columns: 1fr; } aside { display:none; } main { padding:18px; }
+    .search { display:none; } .stats { grid-template-columns:1fr 1fr; } .cards { grid-template-columns:1fr; }
+    .modal { width: 92vw; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="brand"><div class="logo"></div>Lumen</div>
+    <nav>
+      <a class="on" href="#">Today</a>
+      <a href="#">Upcoming</a>
+      <a href="#">Projects</a>
+      <a href="#">Insights</a>
+      <a href="#">Settings</a>
+    </nav>
+  </aside>
+  <main>
+    <header>
+      <h1>Today</h1>
+      <label class="search">🔎<input id="search" placeholder="Search tasks"></label>
+      <button class="primary" id="new">+ New task</button>
+    </header>
+    <div class="stats">
+      <div class="stat"><b id="open">4</b><span>Open tasks</span></div>
+      <div class="stat"><b id="doneCount">1</b><span>Completed today</span></div>
+      <div class="stat"><b>92%</b><span>Weekly focus</span></div>
+    </div>
+    <div class="list" id="list">
+      <div class="row"><div class="check"></div><div class="title">Ship onboarding redesign</div><span class="tag t3">Product</span></div>
+      <div class="row"><div class="check"></div><div class="title">Record App Store preview</div><span class="tag t2">Marketing</span></div>
+      <div class="row done"><div class="check"></div><div class="title">Fix sync conflict on iPad</div><span class="tag t1">Eng</span></div>
+      <div class="row"><div class="check"></div><div class="title">Review pricing page copy</div><span class="tag t2">Marketing</span></div>
+      <div class="row"><div class="check"></div><div class="title">Plan Q4 roadmap</div><span class="tag t3">Product</span></div>
+    </div>
+    <div class="section"><h3>Projects</h3>
+      <div class="cards"><div class="card">Website</div><div class="card">iOS App</div><div class="card">Launch</div></div>
+    </div>
+    <div class="section"><h3>Insights</h3>
+      <div class="cards"><div class="card">Focus time</div><div class="card">Streaks</div><div class="card">Team</div></div>
+    </div>
+  </main>
+</div>
+<div class="modal-bg" id="mbg"><div class="modal">
+  <h2>New task</h2>
+  <input id="taskInput" placeholder="What needs doing?">
+  <div class="actions"><button class="ghost" id="cancel">Cancel</button><button class="primary" id="add">Add task</button></div>
+</div></div>
+<div class="toast" id="toast">Task added ✨</div>
+<script>
+  const $ = (s) => document.querySelector(s);
+  function bind(row) { row.addEventListener('click', () => { row.classList.toggle('done'); count(); }); }
+  function count() { const rows=[...document.querySelectorAll('.row')]; $('#open').textContent = rows.filter(r=>!r.classList.contains('done')).length; $('#doneCount').textContent = rows.filter(r=>r.classList.contains('done')).length; }
+  document.querySelectorAll('.row').forEach(bind);
+  $('#new').onclick = () => { $('#mbg').classList.add('on'); setTimeout(() => $('#taskInput').focus(), 50); };
+  $('#cancel').onclick = () => $('#mbg').classList.remove('on');
+  $('#add').onclick = () => {
+    const v = $('#taskInput').value.trim() || 'Untitled';
+    const row = document.createElement('div'); row.className = 'row';
+    row.innerHTML = `<div class="check"></div><div class="title"></div><span class="tag t3">Product</span>`;
+    row.querySelector('.title').textContent = v; bind(row);
+    $('#list').prepend(row); $('#mbg').classList.remove('on'); $('#taskInput').value=''; count();
+    $('#toast').classList.add('on'); setTimeout(() => $('#toast').classList.remove('on'), 1600);
+  };
+  // Deep links (for simulators / agents without tap access): #new, #type=Text, #add, #toggle=N, #scroll=Y
+  async function route() {
+    const h = decodeURIComponent(location.hash.slice(1)); if (!h) return;
+    const [cmd, arg] = h.split('=');
+    if (cmd === 'new') $('#new').click();
+    if (cmd === 'type') { const i = $('#taskInput'); i.value = ''; for (const ch of arg || '') { i.value += ch; await new Promise(r => setTimeout(r, 70)); } }
+    if (cmd === 'add') $('#add').click();
+    if (cmd === 'toggle') document.querySelectorAll('.row')[+arg || 0]?.click();
+    if (cmd === 'scroll') window.scrollTo({ top: +arg || 0, behavior: 'smooth' });
+  }
+  window.addEventListener('hashchange', route);
+  $('#search').addEventListener('input', (e) => { const q=e.target.value.toLowerCase(); document.querySelectorAll('.row').forEach(r => r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none'); });
+</script>
+</body>
+</html>

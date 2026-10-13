@@ -1,0 +1,20 @@
+{
+  "url": "demo-app/index.html",
+  "device": "desktop",
+  "viewport": { "width": 1280, "height": 800 },
+  "colorScheme": "light",
+  "leadIn": 0.8,
+  "steps": [
+    { "click": "#new" },
+    { "type": { "selector": "#taskInput", "text": "Film the launch teaser" } },
+    { "click": "#add", "after": 1.0 },
+    { "click": "text=Record App Store preview" },
+    { "zoom": { "target": ".stats", "duration": 2.2 } },
+    { "wait": 1.6 },
+    { "type": { "selector": "#search", "text": "market" }, "after": 1.0 },
+    { "press": "Meta+K" },
+    { "scroll": { "y": 420, "duration": 1.0 } },
+    { "hover": "text=iOS App" },
+    { "wait": 0.8 }
+  ]
+}
