@@ -97,13 +97,16 @@ public final class HUD {
         let botY = portrait ? 0.8 * H : 0.925 * H
         let pos = o.position
         var p = CGPoint(x: W / 2, y: H / 2)
+        // Text in the band around the device sits in the middle of the band's usable part
+        // (between the platform's safe edge and the device), with equal air above and below.
+        let safeTop = CGFloat(safe.count == 4 ? safe[0] : 0) * H, safeBottom = H - CGFloat(safe.count == 4 ? safe[1] : 0) * H
         if pos.hasPrefix("top") {
             p.y = topY + size.height / 2
-            if let r = contentRest, r.minY >= size.height + 0.04 * H { p.y = max(r.minY / 2, size.height / 2 + 0.02 * H) }
+            if let r = contentRest, r.minY - safeTop >= size.height + 0.025 * H { p.y = (max(safeTop, 0.02 * H) + r.minY) / 2 }
         }
         if pos.hasPrefix("bottom") {
             p.y = botY - size.height / 2
-            if let r = contentRest, H - r.maxY >= size.height + 0.04 * H { p.y = min((r.maxY + H) / 2, H - size.height / 2 - 0.02 * H) }
+            if let r = contentRest, safeBottom - r.maxY >= size.height + 0.025 * H { p.y = (r.maxY + min(safeBottom, H - 0.02 * H)) / 2 }
         }
         if pos.hasSuffix("left") { p.x = 0.06 * W + size.width / 2 }
         if pos.hasSuffix("right") { p.x = 0.94 * W - size.width / 2 }
@@ -119,7 +122,30 @@ public final class HUD {
     public func overlay(_ o: Overlay, t: Double, contentRect: CGRect? = nil) -> CIImage? {
         guard t >= o.start - 0.001, t <= o.end + 0.001 else { return nil }
         var o = o
-        if o.type == "text", o.fill == nil, o.color == "auto", ["title", "hero", "subtitle", "kicker"].contains(o.style),
+        // Top/bottom text that would overflow its band (headroom/footroom) shrinks to fit it.
+        if o.type == "text", o.x == nil, o.y == nil, let r = contentRest, let text = o.text,
+           o.position.hasPrefix("top") || o.position.hasPrefix("bottom") {
+            let top = o.position.hasPrefix("top")
+            let band = top ? r.minY - CGFloat(safe[0]) * H : (H - r.maxY) - CGFloat(safe[1]) * H
+            let usable = band - 0.025 * H
+            if usable > 0.05 * H {
+                let h = textImage(o, text: text).extent.height
+                if h > usable { o.size *= Double(max(0.55, usable / h)) }
+            }
+        }
+        // Headlines live in the band around the device; when the content moves into it (a zoom),
+        // the headline steps aside instead of colliding with it.
+        var stepAside: CGFloat = 1
+        if o.id == "headline", let cr = contentRect, let text = o.text {
+            let img = textImage(o, text: text)
+            let a = anchor(o, size: img.extent.size)
+            let r = CGRect(x: a.x - img.extent.width / 2, y: a.y - img.extent.height / 2, width: img.extent.width, height: img.extent.height)
+            let inter = r.intersection(cr)
+            let frac = inter.isNull ? 0 : inter.width * inter.height / max(1, r.width * r.height)
+            stepAside = 1 - CGFloat(smoothstep(Double(frac) / 0.2))
+            if stepAside <= 0.01 { return nil }
+        }
+        if o.type == "text", o.id != "headline", o.fill == nil, o.color == "auto", ["title", "hero", "subtitle", "kicker"].contains(o.style),
            let cr = contentRect, let text = o.text {
             let key = "\(o.start)|\(text)"
             let needs: Bool
@@ -186,7 +212,7 @@ public final class HUD {
                 .concatenating(CGAffineTransform(translationX: sz.width / 2, y: sz.height / 2)))
         }
         out = out.transformed(by: CGAffineTransform(translationX: tx, y: H - tyTop - sz.height))
-        return out.opacity(alpha)
+        return out.opacity(alpha * stepAside)
     }
 
     // MARK: Captions

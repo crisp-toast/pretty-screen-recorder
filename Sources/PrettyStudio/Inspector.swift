@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 import AppKit
 import PrettyCore
 
@@ -191,36 +192,130 @@ struct KeystrokePanel: View {
 
 struct AudioPanel: View {
     @ObservedObject var model: EditorModel
+    @State private var narration = ""
+    @State private var mood = "upbeat"
+    @State private var working = false
+    @State private var searching = false
+    @State private var results: [MusicLibrary.Track] = []
+    @State private var playing: String? = nil
+    @State private var player: AVPlayer? = nil
+
+    func findMusic() {
+        searching = true
+        let m = mood
+        Task.detached {
+            var q = MusicLibrary.Query(); q.mood = m; q.minDuration = 45
+            let rs = (try? MusicLibrary.search(q, limit: 5)) ?? []
+            await MainActor.run { results = rs; searching = false }
+        }
+    }
+
+    func toggle(_ t: MusicLibrary.Track) {
+        if playing == t.id { player?.pause(); playing = nil; return }
+        let u = t.file.map { URL(fileURLWithPath: $0) } ?? t.url.flatMap(URL.init(string:))
+        guard let u else { return }
+        player?.pause()
+        player = AVPlayer(url: u); player?.play(); playing = t.id
+    }
+
     var body: some View {
+        let plan = model.studio.audioPlan(preset: model.project.export.preset)
         VStack(alignment: .leading, spacing: 14) {
-            Label2(text: "Microphone")
-            if model.project.source.mic == nil && (model.studio.asset?.tracks(withMediaType: .audio).count ?? 0) < 2 {
-                Card { HStack(spacing: 10) { Image(systemName: "mic.slash"); Text("No microphone was selected for this recording.").font(.system(size: 12)) }.foregroundStyle(.secondary) }
-            } else {
-                SwitchRow(title: "Include microphone", on: $model.project.audio.mic)
-                SliderRow(title: "Microphone volume", value: $model.project.audio.micVolume, range: 0...2)
+            Label2(text: "Soundtrack")
+            Segmented(options: [("auto", "Auto"), ("none", "None"), ("music", "Music"), ("voiceover", "Voice"), ("both", "Both")],
+                      selection: $model.project.audio.mode)
+            Text("Plays: \(plan.mode) — \(plan.reason)").font(.system(size: 11)).foregroundStyle(.secondary)
+
+            Label2(text: "Narration")
+            Card {
+                if model.project.audio.voiceover.isEmpty {
+                    Text("No narration yet.").font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                ForEach(Array(model.project.audio.voiceover.enumerated()), id: \.offset) { i, c in
+                    HStack(alignment: .top) {
+                        Text(String(format: "%.1fs", c.at)).font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary).frame(width: 38, alignment: .leading)
+                        Text(c.text ?? URL(fileURLWithPath: c.path).lastPathComponent).font(.system(size: 12)).lineLimit(2)
+                        Spacer()
+                        Button { model.project.audio.voiceover.remove(at: i) } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary)
+                    }
+                }
+                if Narrator.isAvailable(model.project.audio.voice) {
+                    TextField("Say something at the playhead…", text: $narration, axis: .vertical).textFieldStyle(.roundedBorder).font(.system(size: 12))
+                    Button(model.narrating ? "Recording voice…" : "Add narration at \(String(format: "%.1f", model.currentTime))s") {
+                        guard !narration.isEmpty else { return }
+                        model.addNarration(narration, at: model.currentTime)
+                        narration = ""
+                    }.controlSize(.small).disabled(narration.isEmpty || model.narrating)
+                    if let v = Narrator.resolve(model.project.audio.voice) {
+                        Text("Voice: \(v.voiceName) · \(v.provider == "openai" ? "OpenAI" : "ElevenLabs")").font(.system(size: 10.5)).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("No narrator is set up. Add an ElevenLabs or OpenAI voice in Settings — or let kinetic type tell the story.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    Button("Set Up Voice…") { NSApp.sendAction(#selector(AppDelegate.showSettings), to: nil, from: nil) }.controlSize(.small)
+                }
+                if let e = model.narrationError {
+                    Text(e).font(.system(size: 10.5)).foregroundStyle(.orange).onTapGesture { model.narrationError = nil }
+                }
+                CheckRow(title: "Captions from narration", on: $model.project.captions.fromVoiceover)
             }
-            Label2(text: "System audio")
-            SwitchRow(title: "Include system audio", on: $model.project.audio.system)
-            Card { SliderRow(title: "System audio volume", value: $model.project.audio.systemVolume, range: 0...2) }
-            Label2(text: "Clicks")
-            SwitchRow(title: "Click sounds", on: $model.project.audio.clickSounds)
+
             Label2(text: "Music")
             Card {
                 HStack {
-                    Text(model.project.audio.music.path.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "None").font(.system(size: 12)).lineLimit(1)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(model.project.audio.music.title ?? model.project.audio.music.path.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "None")
+                            .font(.system(size: 12, weight: .medium)).lineLimit(1)
+                        if let lic = model.project.audio.music.license {
+                            Text("\(model.project.audio.music.artist ?? "") · \(lic.name)\(lic.requiresCredit ? " · credit required" : "")")
+                                .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                    if let bpm = model.project.audio.music.bpm { Text("\(Int(bpm)) BPM").font(.system(size: 11)).foregroundStyle(.secondary) }
                     Spacer()
-                    Button("Choose…") {
+                    if model.project.audio.music.path != nil { Button { model.project.audio.music = MusicSpec() } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain) }
+                }
+                HStack {
+                    Picker("", selection: $mood) { ForEach(MusicLibrary.moods.keys.sorted(), id: \.self) { Text($0.capitalized).tag($0) } }.labelsHidden().frame(width: 120)
+                    Button(searching ? "Finding…" : "Find Real Music") { findMusic() }.controlSize(.small).disabled(searching)
+                }
+                ForEach(results, id: \.id) { t in
+                    HStack(spacing: 8) {
+                        Button { toggle(t) } label: { Image(systemName: playing == t.id ? "stop.circle.fill" : "play.circle.fill").font(.system(size: 16)) }.buttonStyle(.plain)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(t.title).font(.system(size: 11.5, weight: .medium)).lineLimit(1)
+                            Text("\(t.artist)\(t.bpm.map { " · \(Int($0)) BPM" } ?? "") · \(t.feel.prefix(2).joined(separator: ", "))").font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer()
+                        Button(model.usingTrack == t.id ? "…" : "Use") { player?.pause(); playing = nil; model.useTrack(t) }.controlSize(.mini).disabled(model.usingTrack != nil)
+                    }
+                }
+                HStack {
+                    Button("Choose File…") {
                         let panel = NSOpenPanel(); panel.allowedContentTypes = [.audio]; panel.allowsMultipleSelection = false
-                        if panel.runModal() == .OK, let u = panel.url { model.project.audio.music.path = u.path }
+                        if panel.runModal() == .OK, let u = panel.url { model.setMusic(u) }
                     }.controlSize(.small)
-                    if model.project.audio.music.path != nil { Button { model.project.audio.music.path = nil } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain) }
+                    Button(working ? "Generating…" : "Generate Original") {
+                        working = true
+                        model.generateMusic(mood: MusicGen.moods.contains(mood) ? mood : "upbeat", bpm: nil) { working = false }
+                    }.controlSize(.small).disabled(working)
                 }
                 SliderRow(title: "Music volume", value: $model.project.audio.music.volume, range: 0...1)
                 CheckRow(title: "Duck under voice", on: $model.project.audio.music.duck)
             }
+
+            Label2(text: "Recorded audio")
+            if model.project.source.mic == nil && (model.studio.assetInfo?.audioTracks.count ?? 0) < 2 {
+                Text("No microphone was recorded.").font(.system(size: 11)).foregroundStyle(.secondary)
+            } else {
+                SwitchRow(title: "Include microphone", on: $model.project.audio.mic)
+                SliderRow(title: "Microphone volume", value: $model.project.audio.micVolume, range: 0...2)
+            }
+            SwitchRow(title: "Include system audio", on: $model.project.audio.system)
+            SliderRow(title: "System audio volume", value: $model.project.audio.systemVolume, range: 0...2)
+            SwitchRow(title: "Click sounds", on: $model.project.audio.clickSounds)
             SwitchRow(title: "Normalize loudness (−14 LUFS)", on: $model.project.audio.normalize)
-            Text("The preview plays recorded audio; music, click sounds and normalization are applied on export.").font(.system(size: 10.5)).foregroundStyle(.secondary)
+            Text("The preview plays recorded audio; narration, music and click sounds are mixed on export.").font(.system(size: 10.5)).foregroundStyle(.secondary)
         }
     }
 }

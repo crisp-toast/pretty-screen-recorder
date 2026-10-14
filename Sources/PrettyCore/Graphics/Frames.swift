@@ -261,6 +261,9 @@ public enum Frames {
                 let c = portrait ? CGPoint(x: screen.midX, y: screen.minY + 14 * u) : CGPoint(x: screen.minX + 14 * u, y: screen.midY)
                 ctx.setFillColor(RGBA.hex("#000000").cg)
                 ctx.fillEllipse(in: CGRect(x: c.x - d / 2, y: c.y - d / 2, width: d, height: d))
+            } else if source.kind == "ios" {
+                // Simulator captures already contain the real Dynamic Island, pixel-exact;
+                // drawing another one doubles it.
             } else {
                 // Dynamic Island
                 let iw = 125 * u, ih = 36.7 * u, top = 11.3 * u

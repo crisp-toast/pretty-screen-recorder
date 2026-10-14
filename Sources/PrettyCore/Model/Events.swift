@@ -60,14 +60,24 @@ public struct ClickEvent: Codable {
     public var button: String = "left"
     /// true for touches on mobile recordings.
     public var touch: Bool = false
+    /// Normalized rect of the clicked element, and of the meaningful container around it
+    /// (card, dialog, form, section). Smart Zooms frame the context so headings stay in view.
+    public var rect: NRect? = nil
+    public var context: NRect? = nil
+    /// Why this action happened (from a directed storyboard), and the selector that was clicked.
+    public var why: String? = nil
+    public var target: String? = nil
     public init(t: Double, x: Double, y: Double, up: Double? = nil, button: String = "left", touch: Bool = false) {
         self.t = t; self.x = x; self.y = y; self.up = up; self.button = button; self.touch = touch
     }
-    enum CodingKeys: String, CodingKey { case t, x, y, up, button, touch }
+    enum CodingKeys: String, CodingKey { case t, x, y, up, button, touch, rect, context, why, target }
     public init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self)
         t = try c.decode(Double.self, forKey: .t); x = try c.decode(Double.self, forKey: .x); y = try c.decode(Double.self, forKey: .y)
         up = try c.decodeIfPresent(Double.self, forKey: .up); button = try c.v(.button, "left"); touch = try c.v(.touch, false)
+        rect = try c.decodeIfPresent(NRect.self, forKey: .rect); context = try c.decodeIfPresent(NRect.self, forKey: .context)
+        why = try c.decodeIfPresent(String.self, forKey: .why)
+        target = try c.decodeIfPresent(String.self, forKey: .target)
     }
     public var release: Double { up ?? (t + 0.08) }
 }
@@ -118,7 +128,9 @@ public struct Marker: Codable {
     /// Normalized source rect for zoom / spotlight targets.
     public var rect: NRect? = nil
     public var text: String? = nil
-    public init(t: Double, type: String, duration: Double? = nil, level: Double? = nil, rect: NRect? = nil, text: String? = nil) {
-        self.t = t; self.type = type; self.duration = duration; self.level = level; self.rect = rect; self.text = text
+    /// For "beat" markers: the storyboard beat index.
+    public var index: Int? = nil
+    public init(t: Double, type: String, duration: Double? = nil, level: Double? = nil, rect: NRect? = nil, text: String? = nil, index: Int? = nil) {
+        self.t = t; self.type = type; self.duration = duration; self.level = level; self.rect = rect; self.text = text; self.index = index
     }
 }

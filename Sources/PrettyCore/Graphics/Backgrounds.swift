@@ -56,8 +56,68 @@ public enum Backgrounds {
             }
             return preset(spec.preset)?.dark ?? true
         case "none": return true
+        case "stage": return !["studio", "paper"].contains(spec.preset)
         default: return true
         }
+    }
+
+    public static let stages = ["keynote", "studio", "glow", "paper", "cinema"]
+
+    /// Modern stages: restrained, lit backdrops (not wallpapers). Drawn small and blurred for silky
+    /// light falloff; the output dither keeps them band-free.
+    public static func stage(_ name: String, size: CGSize, brand: [String], focus: CGPoint = CGPoint(x: 0.5, y: 0.5)) -> CIImage {
+        let full = CGRect(origin: .zero, size: size)
+        let aspect = size.width / max(size.height, 1)
+        let sh = 320, sw = max(8, Int(320 * aspect))
+        let cs = brand.compactMap { RGBA.parse($0) }
+        let primary = cs.first ?? RGBA.hex("#0A84FF"), second = cs.count > 1 ? cs[1] : primary.mixed(RGBA.hex("#5E5CE6"), 0.5)
+        let cg = drawImage(width: sw, height: sh) { ctx in
+            let W = CGFloat(sw), H = CGFloat(sh), D = max(W, H)
+            let fx = focus.x * W, fy = focus.y * H
+            func fill(_ c: RGBA) { ctx.setFillColor(c.cg); ctx.fill(CGRect(x: 0, y: 0, width: W, height: H)) }
+            func light(_ x: CGFloat, _ y: CGFloat, _ r: CGFloat, _ c: RGBA) {
+                let g = CGGradient(colorsSpace: sRGB, colors: [c.cg, c.with(alpha: c.a * 0.45).cg, c.with(alpha: 0).cg] as CFArray, locations: [0, 0.42, 1])!
+                ctx.drawRadialGradient(g, startCenter: CGPoint(x: x, y: y), startRadius: 0, endCenter: CGPoint(x: x, y: y), endRadius: r, options: [])
+            }
+            func vignette(_ a: CGFloat) {
+                let g = CGGradient(colorsSpace: sRGB, colors: [RGBA(0, 0, 0, 0).cg, RGBA(0, 0, 0, a).cg] as CFArray, locations: [0.55, 1])!
+                ctx.drawRadialGradient(g, startCenter: CGPoint(x: W / 2, y: H * 0.48), startRadius: 0, endCenter: CGPoint(x: W / 2, y: H * 0.48), endRadius: D * 0.75, options: [])
+            }
+            switch name {
+            case "studio":
+                // Seamless sweep: lighter behind the subject, falling off to the floor and corners.
+                let g = CGGradient(colorsSpace: sRGB, colors: [RGBA.hex("#E9E9ED").cg, RGBA.hex("#F5F5F7").cg, RGBA.hex("#E2E2E7").cg] as CFArray, locations: [0, 0.55, 1])!
+                ctx.drawLinearGradient(g, start: CGPoint(x: 0, y: 0), end: CGPoint(x: 0, y: H), options: [])
+                light(fx, fy * 0.95, D * 0.55, RGBA(1, 1, 1, 0.85))
+                vignette(0.07)
+            case "paper":
+                fill(RGBA.hex("#F2F0EB"))
+                light(W * 0.35, H * 0.3, D * 0.7, RGBA(1, 1, 1, 0.55))
+                vignette(0.05)
+            case "glow":
+                fill(RGBA.hex("#040406"))
+                light(fx, fy * 1.02, D * 0.62, Kinetic.darken(primary, to: 0.42).with(alpha: 0.85))
+                light(fx + W * 0.18, fy - H * 0.16, D * 0.38, Kinetic.darken(second, to: 0.4).with(alpha: 0.55))
+                light(fx, fy, D * 0.2, primary.mixed(RGBA(1, 1, 1), 0.2).with(alpha: 0.35))
+                vignette(0.55)
+            case "cinema":
+                fill(RGBA.hex("#06080A"))
+                light(W * 0.2, H * 0.18, D * 0.6, RGBA.hex("#123038").with(alpha: 0.7))
+                light(W * 0.85, H * 0.92, D * 0.55, RGBA.hex("#2A1A10").with(alpha: 0.65))
+                light(fx, fy, D * 0.35, RGBA.hex("#1A1E22").with(alpha: 0.6))
+                vignette(0.7)
+            default: // keynote
+                fill(RGBA.hex("#000000"))
+                light(fx, fy * 0.96, D * 0.55, RGBA.hex("#1C1C21").with(alpha: 1))
+                light(fx, fy * 0.96, D * 0.22, RGBA.hex("#26262C").with(alpha: 0.6))
+                vignette(0.4)
+            }
+        }
+        var img = CIImage.from(cg)
+        let sc = size.height / CGFloat(sh)
+        img = img.samplingLinear().transformed(by: CGAffineTransform(scaleX: sc * 1.0001, y: sc * 1.0001))
+        img = img.clampedToExtent().applyingFilter("CIGaussianBlur", parameters: ["inputRadius": size.height * 0.012])
+        return img.cropped(to: full)
     }
 
     /// Render the background at `size` (output pixels).
@@ -71,6 +131,8 @@ public enum Backgrounds {
         case "color":
             let c = RGBA.parse(spec.color, brand: brand) ?? RGBA(0.06, 0.06, 0.08)
             return CIImage(color: CIColor(cgColor: c.cg)).cropped(to: full)
+        case "stage":
+            return stage(spec.preset, size: size, brand: brand)
         case "image":
             guard let path = spec.image, let cg = loadCGImage(resolve(path, baseURL)) else {
                 Log.warn("background image not found: \(spec.image ?? "(none)"); using gradient")
@@ -93,7 +155,7 @@ public enum Backgrounds {
         return img.cropped(to: full)
     }
 
-    static func resolve(_ path: String, _ base: URL?) -> URL {
+    public static func resolve(_ path: String, _ base: URL?) -> URL {
         if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
         if path.hasPrefix("~") { return URL(fileURLWithPath: (path as NSString).expandingTildeInPath) }
         if let base { return base.appendingPathComponent(path) }

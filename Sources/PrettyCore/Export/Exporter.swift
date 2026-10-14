@@ -104,7 +104,8 @@ public final class Exporter {
         var muxed = videoOnly
         if wantAudio || settings.requireAudioTrack {
             let audio = tmpDir.appendingPathComponent("audio.m4a")
-            let has = try AudioMix.render(studio: studio, to: audio, duration: studio.outputDuration, silentIfEmpty: settings.requireAudioTrack, includeContent: wantAudio)
+            let has = try AudioMix.render(studio: studio, to: audio, duration: studio.outputDuration, silentIfEmpty: settings.requireAudioTrack, includeContent: wantAudio,
+                                         preset: settings.preset?.name)
             if has {
                 muxed = tmpDir.appendingPathComponent("muxed." + (settings.codec == "prores" ? "mov" : "mp4"))
                 var args = ["-i", videoOnly.path, "-i", audio.path, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy"]
@@ -143,9 +144,22 @@ public final class Exporter {
                 try writeJPEG(cg, to: poster, quality: 0.85); extras.append(poster.path)
             }
         }
+        // What this video must carry when it's published (music license, AI voice disclosure).
+        if wantAudio {
+            let credits = studio.credits(preset: settings.preset?.name)
+            if !credits.lines.isEmpty {
+                let f = out.deletingPathExtension().appendingPathExtension("credits.txt")
+                let header = "Credits for \(out.lastPathComponent) — paste into the post/description when publishing.\n\n"
+                try? (header + credits.text + "\n").write(to: f, atomically: true, encoding: .utf8)
+                extras.append(f.path)
+                if credits.onScreen != nil && studio.onScreenCredit(preset: settings.preset?.name) == nil {
+                    notes.append("the music license requires credit: publish the lines in \(f.lastPathComponent)")
+                }
+            }
+        }
         let size = (try? fm.attributesOfItem(atPath: out.path)[.size] as? Int64) ?? 0
         return ExportResult(output: out.path, extra: extras, width: settings.width, height: settings.height, fps: settings.fps,
-                            duration: round3(studio.outputDuration), frames: frames, sizeBytes: size ?? 0,
+                            duration: round3(studio.outputDuration), frames: frames, sizeBytes: size,
                             seconds: round3(Date().timeIntervalSince(started)), notes: notes)
     }
 
