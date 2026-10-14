@@ -7,7 +7,8 @@ All commands print JSON on stdout; progress and warnings go to stderr.
 
 RECORD (each creates a .prettystudio project bundle)
   pretty record web <storyboard.json> [-o bundle] [--project P] [--look L] [-p preset] [--force] [--compress-idle]
-        Script a browser (desktop / iphone / ipad / android viewports) and record it. See `pretty guide`.
+        Script a browser (desktop / iphone / ipad / android viewports) and record it. Format: `pretty schema --storyboard`.
+        --check runs every step fast without recording (catches bad selectors). Exits 4 if any step failed.
   pretty record screen [--display N | --window "App[:title]" | --region x,y,w,h] [--duration S]
         [--system-audio] [--mic] [-o bundle] [--project P] [--detach]   (stop with `pretty record stop`)
   pretty record sim [--device booted|UDID] [--duration S] [-o bundle] [--detach]
@@ -16,6 +17,33 @@ RECORD (each creates a .prettystudio project bundle)
         Log events into an in-progress recording (e.g. while an agent drives the simulator).
   pretty new <video> [--events e.json] [--camera cam.mov] [--kind K] [--look L] [-p preset] [-o bundle]
   pretty new --card [--duration 3] [--look L] [-p preset] -o card.prettystudio   (title card: background + text)
+
+DIRECT (tailored copy + kinetic type + narration + real music + intentional, cued actions)
+  pretty brand <site | project dir | icon.png> [--project P] [-o dir] [--name] [--tagline] [--cta] [--colors #a,#b] [--icon f]
+        The product's name, promise, colors, icon, logo and font → brand.json (use as "brand" in storyboards).
+  pretty lint <storyboard.json>            Generic ad-speak, long hooks, missing lockup, product never named.
+  pretty plan <storyboard.json> [-p preset] [--out dir]   Time a beat storyboard: say/do/why/at/scene → plan.json + timeline.
+        `record web` plans automatically when the storyboard has "beats". Review warnings first.
+        Storyboard format: `pretty schema --storyboard`.   Dry run: `pretty record web <storyboard> --check`.
+  pretty compose <storyboard.json> [-o bundle] [-p preset]   Type-only video from scene beats (no recording).
+  pretty conform <bundle> --plan plan.json   Retime a loose sim/desktop take so clicks land on the plan's cues.
+  pretty voice list [--provider elevenlabs|openai] | say "text" [-o f] [--voice V] | add <bundle> "text" --at T
+        | add <bundle> --file vo.mp3 --at T [--text] | clear <bundle>        (ElevenLabs / OpenAI only; no system voices)
+  pretty music search [text] [--mood upbeat|confident|corporate|chill|playful|cinematic|dramatic|minimal] [--bpm 100-125]
+        [--min S] [--famous] | get <track> | use <bundle> <track> [--volume] | library | moods
+        Real tracks: your licensed folder, then Kevin MacLeod (CC BY 4.0, credited automatically).
+  pretty music generate [<bundle>] [--mood upbeat|corporate|chill|cinematic|minimal] [--bpm N] [-o f.wav]   (original fallback)
+  pretty music analyze <file|bundle>        Tempo + downbeat of a track (enables beat sync).
+  pretty credits <bundle> [-p preset]       Credit lines the published video must carry (also written next to renders).
+  pretty shots <bundle> [-p preset]         Render the project's 3D device shots now (Blender).
+  pretty broll "prompt" [--provider veo|sora|fal] [--seconds 6] [--aspect 9:16] [--image f] [--treatment T]   One AI B-roll clip.
+  pretty review <bundle | render.mp4> [-p preset]   MANDATORY before delivering: review pack + objective checks + rubric.
+  Soundtrack: pretty set <bundle> audio.mode=none|music|voiceover|both|auto
+
+SETUP (the app's Settings window does all of this with previews)
+  pretty setup [status] | setup voice --provider elevenlabs|openai|none [--voice NAME] [--model M] [--speed] [--style]
+        | setup music [--licensed DIR|none] [--incompetech on|off] [--generated on|off] [--credits on|off]
+  pretty keys set <elevenlabs|openai|gemini|fal> (hidden prompt or stdin; login Keychain) | test | remove <p> | status
 
 EDIT (bundle = .prettystudio dir or project.json)
   pretty inspect <bundle>              Durations, zooms, cuts, overlays, warnings. Start here.
@@ -29,7 +57,7 @@ EDIT (bundle = .prettystudio dir or project.json)
         [--animation rise|pop|fade|slide|typewriter|none] [--time output|source]
   pretty text <bundle> ls | rm INDEX
   pretty caption <bundle> --srt file.srt | "text" --start S --end E
-  pretty music <bundle> song.m4a [--volume 0.25]
+  pretty music <bundle> song.m4a [--volume 0.25]   (tempo/downbeat detected for beat sync)
   pretty validate <bundle>
 
 RENDER
@@ -40,9 +68,9 @@ RENDER
 
 REFERENCE
   pretty guide          Full agent guide (workflows, storyboard format, recipes)
-  pretty schema         Every project.json key with type, default and meaning
+  pretty schema         Every project.json key with type, default and meaning (--storyboard: storyboard format)
   pretty presets | looks | backgrounds [--sheet out.jpg]
-  pretty doctor         Check ffmpeg, Chrome, Master Storage, permissions
+  pretty doctor         Check ffmpeg, Chrome, narration, music, Master Storage, permissions
   pretty open <bundle>  Open in the Pretty Studio editor app
 """
 
@@ -51,6 +79,7 @@ guard let cmd = argv.first, cmd != "help", cmd != "--help", cmd != "-h" else {
     print(usage); exit(0)
 }
 let args = Args(Array(argv.dropFirst()))
+Shots.defaultTools = .find(script: Home.root.appendingPathComponent("scripts/blender/device_shot.py"))
 if args.has("quiet") { Log.quiet = true }
 if args.has("help") {
     // Per-command help: the usage lines for this command (and their continuation lines).
@@ -79,7 +108,19 @@ do {
     case "trim": try cmdTrim(args)
     case "text", "title": try cmdText(args)
     case "caption", "captions": try cmdCaption(args)
-    case "music": try cmdMusic(args)
+    case "music": try cmdMusicDispatch(args)
+    case "voice", "voiceover": try cmdVoice(args)
+    case "plan": try cmdPlan(args)
+    case "setup": try cmdSetup(args)
+    case "keys", "key": try cmdKeys(args)
+    case "credits": try cmdCredits(args)
+    case "brand": try cmdBrand(args)
+    case "lint": try cmdLint(args)
+    case "compose": try cmdCompose(args)
+    case "review": try cmdReview(args)
+    case "broll": try cmdBroll(args)
+    case "shot", "shots": try cmdShots(args)
+    case "conform": try cmdConform(args)
     case "validate": try cmdValidate(args)
     case "frame", "still": try cmdFrame(args)
     case "sheet", "storyboard": try cmdSheet(args)
@@ -88,12 +129,16 @@ do {
     case "presets": cmdPresets()
     case "looks": cmdLooks()
     case "backgrounds": try cmdBackgrounds(args)
-    case "schema": print(Schema.reference())
+    case "schema":
+        if args.has("storyboard") {
+            let doc = Home.root.appendingPathComponent("docs/STORYBOARD.md")
+            print((try? String(contentsOf: doc, encoding: .utf8)) ?? "storyboard reference missing: \(doc.path)")
+        } else { print(Schema.reference()) }
     case "guide": try cmdGuide()
     case "doctor": try cmdDoctor()
     case "open": try cmdOpen(args)
     case "_cursor": try cmdDebugCursor(args)
-    case "version", "--version": emit(["version": "1.0.0", "home": Home.root.path])
+    case "version", "--version": emit(["version": "1.1.0", "home": Home.root.path])
     default:
         FileHandle.standardError.write("unknown command '\(cmd)'\n\n\(usage)\n".data(using: .utf8)!)
         exit(64)

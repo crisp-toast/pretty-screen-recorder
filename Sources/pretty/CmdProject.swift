@@ -56,7 +56,7 @@ func summarize(_ bundle: URL, extra: [String: Any] = [:]) throws {
     let studio = try Studio(url: bundle)
     let p = studio.project
     var out: [String: Any] = extra
-    out["ok"] = true
+    out["ok"] = extra["ok"] ?? true
     out["bundle"] = Studio.locate(bundle).base.path
     out["name"] = p.name
     out["kind"] = p.source.kind
@@ -79,7 +79,12 @@ func summarize(_ bundle: URL, extra: [String: Any] = [:]) throws {
         if let t = o.text { d["text"] = t }
         return d
     }
-    out["captions"] = studio.captions.count
+    out["captions"] = studio.captions(preset: nil).count
+    let ap = studio.audioPlan(preset: nil)
+    var audio: [String: Any] = ["mode": ap.mode, "reason": ap.reason, "voiceClips": p.audio.voiceover.count,
+                                "music": p.audio.music.path ?? NSNull()]
+    if let g = p.audio.music.grid { audio["bpm"] = g.bpm }
+    out["audio"] = audio
     let frameType = studio.hasVideo ? Frames.resolveType(p.frame, source: p.source, videoSize: studio.cropRect.size) : "none"
     out["look"] = ["background": p.background.type == "gradient" ? p.background.preset : p.background.type, "frame": frameType,
                    "aspect": p.layout.aspect, "fit": p.layout.fit, "cursor": "\(p.cursor.style) x\(p.cursor.size) \(p.cursor.motion)"]
@@ -306,9 +311,16 @@ func cmdMusic(_ a: Args) throws {
     guard FileManager.default.fileExists(atPath: file.path) else { throw fail("music not found: \(file.path)") }
     var p = try ProjectIO.load(b)
     p.audio.music.path = file.path
+    p.audio.music.generate = nil
     if let v = a.double("volume") { p.audio.music.volume = v }
+    var beat: [String: Any] = [:]
+    if let r = try? BeatDetect.analyze(file) {
+        p.audio.music.bpm = r.bpm; p.audio.music.beatOffset = r.firstBeat
+        beat = ["bpm": r.bpm, "firstBeat": r.firstBeat, "confidence": r.confidence]
+    }
+    if p.audio.mode == "voiceover" || p.audio.mode == "none" { Log.warn("audio.mode is \(p.audio.mode) — set audio.mode=music or both to hear it") }
     try ProjectIO.save(p, to: b)
-    emit(["ok": true, "music": file.path, "volume": p.audio.music.volume])
+    emit(["ok": true, "music": file.path, "volume": p.audio.music.volume, "beats": beat])
 }
 
 // MARK: debug

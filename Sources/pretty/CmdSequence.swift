@@ -39,6 +39,7 @@ func cmdSequence(_ a: Args) throws {
         let clip = tmp.appendingPathComponent(String(format: "clip_%02d.mp4", i))
         if let p = (item["project"] as? String) ?? (item["card"] as? String) {
             let studio = try Studio(url: res(p))
+            if seq["music"] != nil { studio.project.audio.music.path = nil } // the sequence's music bed replaces per-item music
             var o = ExportSpec(); o.width = W; o.height = H; o.fps = fps; o.quality = spec.quality ?? "high"; o.format = "mp4"; o.codec = "h264"
             var settings = try ExportSettings.resolve(studio, overrides: o)
             settings.requireAudioTrack = true
@@ -64,31 +65,94 @@ func cmdSequence(_ a: Args) throws {
     let T = ttype == "none" ? 0 : ((tr?["duration"] as? Double) ?? 0.4)
     let xf = ["fade": "fade", "dissolve": "dissolve", "slide": "slideleft", "slideup": "slideup", "wipe": "wipeleft",
               "zoom": "zoomin", "smooth": "smoothleft", "circle": "circleopen", "blur": "hblur"][ttype] ?? "fade"
+
+    // Music bed: a file (beats analyzed) or a generated track; with sync, cuts land on the beat.
+    let m = seq["music"] as? [String: Any]
+    var musicURL: URL? = nil, grid: BeatGrid? = nil, musicStart = 0.0
+    var rawTotal = clips.map(\.1).reduce(0, +) - T * Double(max(0, clips.count - 1))
+    var musicSpec: MusicSpec? = nil
+    if m?["track"] != nil || m?["find"] != nil || (m?["path"] == nil && m?["generate"] == nil && m != nil) {
+        // A real track: catalog/licensed reference, or a search.
+        let t: MusicLibrary.Track
+        if let ref = m?["track"] as? String { t = try MusicLibrary.find(ref) }
+        else {
+            var q = MusicLibrary.Query(json: (m?["find"] as? [String: Any]) ?? ["mood": m?["mood"] as? String ?? "upbeat"])
+            q.minDuration = q.minDuration ?? rawTotal + 2
+            guard let best = try MusicLibrary.search(q, limit: 1).first else { throw fail("no track matched the music search") }
+            t = best
+        }
+        let spec = try MusicLibrary.spec(for: t)
+        musicSpec = spec
+        musicURL = spec.path.map { URL(fileURLWithPath: $0) }
+        if let bpm = spec.bpm {
+            // Start on the downbeat at/after the smart offset.
+            let g0 = BeatGrid(bpm: bpm, firstBeat: spec.beatOffset ?? 0)
+            musicStart = g0.next(atOrAfter: spec.offset)
+            grid = BeatGrid(bpm: bpm, firstBeat: 0)
+        }
+        Log.info("music: \"\(t.title)\" — \(t.artist) (\(t.license.name))")
+    } else if let mp = m?["path"] as? String {
+        musicURL = res(mp)
+        if let r = try? BeatDetect.analyze(musicURL!), r.confidence >= 0.2 {
+            musicStart = r.firstBeat               // start the bed on its first downbeat
+            grid = BeatGrid(bpm: r.bpm, firstBeat: 0)
+        }
+    } else if let g = m?["generate"] as? [String: Any] {
+        var spec = MusicGenSpec()
+        spec.mood = g["mood"] as? String ?? spec.mood; spec.bpm = g["bpm"] as? Double; spec.key = g["key"] as? String
+        spec.seed = g["seed"] as? Int ?? spec.seed; spec.energy = g["energy"] as? Double ?? spec.energy
+        let u = tmp.appendingPathComponent("music.wav")
+        let r = try MusicGen.render(spec, duration: rawTotal + 1, to: u)
+        musicURL = u
+        grid = BeatGrid(bpm: r.bpm, firstBeat: 0)
+    }
+    let sync = (seq["sync"] as? String ?? "beats") != "none"
+
+    // Effective clip lengths: with beat sync, trim each clip's tail (by less than one beat) so every
+    // clip STARTS on a beat — directed clips keep their own click-on-beat timing when tempos match.
+    var lens = clips.map(\.1)
+    if sync, let g = grid, clips.count > 1 {
+        var offset = 0.0
+        for k in 1..<clips.count {
+            let raw = offset + lens[k - 1] - T
+            // Latest beat at or before where the next clip would start (we only ever shorten clips).
+            let beat = g.firstBeat + ((raw - g.firstBeat) / g.period + 1e-6).rounded(.down) * g.period
+            let trimmed = beat - offset + T
+            if trimmed > 0.5 && lens[k - 1] - trimmed < g.period + 1e-6 && trimmed <= lens[k - 1] { lens[k - 1] = trimmed }
+            offset += lens[k - 1] - T
+        }
+        Log.info(String(format: "beat-synced cuts at %.0f BPM", g.bpm))
+    }
+    rawTotal = lens.reduce(0, +) - T * Double(max(0, clips.count - 1))
+    let total = rawTotal
+
     var args: [String] = []
     for c in clips { args += ["-i", c.0.path] }
     var filters: [String] = []
+    for i in clips.indices {
+        filters.append("[\(i):v]trim=0:\(String(format: "%.4f", lens[i])),setpts=PTS-STARTPTS[cv\(i)]")
+        filters.append("[\(i):a]atrim=0:\(String(format: "%.4f", lens[i])),asetpts=PTS-STARTPTS[ca\(i)]")
+    }
     if clips.count == 1 {
-        filters.append("[0:v]null[v]"); filters.append("[0:a]anull[a]")
+        filters.append("[cv0]null[v]"); filters.append("[ca0]anull[a]")
     } else if T <= 0 {
-        filters.append(clips.indices.map { "[\($0):v][\($0):a]" }.joined() + "concat=n=\(clips.count):v=1:a=1[v][a]")
+        filters.append(clips.indices.map { "[cv\($0)][ca\($0)]" }.joined() + "concat=n=\(clips.count):v=1:a=1[v][a]")
     } else {
-        var vprev = "[0:v]", aprev = "[0:a]", offset = 0.0
+        var vprev = "[cv0]", aprev = "[ca0]", offset = 0.0
         for i in 1..<clips.count {
-            offset += clips[i - 1].1 - T
+            offset += lens[i - 1] - T
             let vo = i == clips.count - 1 ? "[v]" : "[v\(i)]", ao = i == clips.count - 1 ? "[a]" : "[a\(i)]"
-            filters.append("\(vprev)[\(i):v]xfade=transition=\(xf):duration=\(T):offset=\(String(format: "%.4f", offset))\(vo)")
-            filters.append("\(aprev)[\(i):a]acrossfade=d=\(T)\(ao)")
+            filters.append("\(vprev)[cv\(i)]xfade=transition=\(xf):duration=\(T):offset=\(String(format: "%.4f", offset))\(vo)")
+            filters.append("\(aprev)[ca\(i)]acrossfade=d=\(T)\(ao)")
             vprev = vo; aprev = ao
         }
     }
-    let total = clips.map(\.1).reduce(0, +) - T * Double(max(0, clips.count - 1))
     var amap = "[a]"
-    if let m = seq["music"] as? [String: Any], let mp = m["path"] as? String {
-        let mu = res(mp)
-        args += ["-stream_loop", "-1", "-i", mu.path]
+    if let mu = musicURL {
+        args += ["-stream_loop", "-1", "-ss", "\(musicStart)", "-i", mu.path]
         let mi = clips.count
-        let vol = m["volume"] as? Double ?? 0.3
-        filters.append("[\(mi):a]atrim=0:\(total),asetpts=PTS-STARTPTS,aresample=48000,volume=\(vol),afade=t=in:d=0.6,afade=t=out:st=\(max(0, total - 1.5)):d=1.5[mus]")
+        let vol = m?["volume"] as? Double ?? 0.3
+        filters.append("[\(mi):a]atrim=0:\(total),asetpts=PTS-STARTPTS,aresample=48000,volume=\(vol),afade=t=in:d=0.3,afade=t=out:st=\(max(0, total - 1.5)):d=1.5[mus]")
         filters.append("[a][mus]amix=inputs=2:normalize=0:duration=first,loudnorm=I=-14:TP=-1:LRA=11,aresample=48000[am]")
         amap = "[am]"
     }
@@ -98,6 +162,15 @@ func cmdSequence(_ a: Args) throws {
     Log.info("stitching \(clips.count) clips (\(ttype) \(T)s) → \(out.path)")
     try Media.ffmpegRun(args)
     let size = (try? FileManager.default.attributesOfItem(atPath: out.path)[.size] as? Int64) ?? 0
-    emit(["ok": true, "output": out.path, "size": "\(W)x\(H)", "fps": fps, "duration": round3(total),
-          "items": clips.count, "megabytes": round3(Double(size ?? 0) / 1_048_576)])
+    var result: [String: Any] = ["ok": true, "output": out.path, "size": "\(W)x\(H)", "fps": fps, "duration": round3(total),
+                                 "items": clips.count, "megabytes": round3(Double(size) / 1_048_576)]
+    if let ms = musicSpec {
+        let c = MusicLibrary.credits(music: ms, usedMusic: true, voiceProvider: nil)
+        if !c.lines.isEmpty {
+            let f = out.deletingPathExtension().appendingPathExtension("credits.txt")
+            try? ("Credits for \(out.lastPathComponent) — paste into the post/description when publishing.\n\n" + c.text + "\n").write(to: f, atomically: true, encoding: .utf8)
+            result["credits"] = c.lines; result["creditsFile"] = f.path
+        }
+    }
+    emit(result)
 }
