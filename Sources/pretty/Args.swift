@@ -11,7 +11,7 @@ struct Args {
         "json", "quiet", "manual", "auto", "reset", "force", "open", "help", "no-audio", "compress-idle", "idle", "zooms",
         "no-zoom", "dry-run", "detach", "all", "keep", "silent", "verbose", "dark", "light", "symlink", "no-auto", "mic",
         "system-audio", "list", "markdown", "camera", "stop", "status", "touch", "no-cursor", "replace", "clear",
-        "pixels", "norm", "keep-status-bar", "card",
+        "pixels", "norm", "keep-status-bar", "card", "check", "storyboard",
     ]
 
     init(_ argv: [String]) {

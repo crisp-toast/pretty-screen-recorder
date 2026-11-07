@@ -14,20 +14,27 @@ struct WelcomeView: View {
     let open: (URL) -> Void
     let openPanel: () -> Void
     let importVideo: () -> Void
+    let settings: () -> Void
     @State private var recents: [RecentProject] = []
+    @State private var voiceLine = ""
 
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 18) {
-                RoundedRectangle(cornerRadius: 18)
-                    .fill(LinearGradient(colors: [Color(red: 0.43, green: 0.36, blue: 1), Color(red: 0.0, green: 0.76, blue: 1), Color(red: 1, green: 0.37, blue: 0.64)],
-                                         startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 64, height: 64)
-                    .overlay(Image(systemName: "cursorarrow.rays").font(.system(size: 28, weight: .semibold)).foregroundStyle(.white))
+                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 72, height: 72)
+                    .shadow(color: Brand.violet.opacity(0.45), radius: 14, y: 6)
                 Text("Pretty Studio").font(.system(size: 26, weight: .bold))
-                Text("Polish screen recordings into product videos.\nAgents drive it with the `pretty` CLI; you can fine-tune here.")
+                Text("Directed product videos.\nAgents drive it with the `pretty` CLI; you fine-tune here.")
                     .font(.system(size: 12.5)).foregroundStyle(.secondary)
                 Spacer()
+                Button { settings() } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "waveform").foregroundStyle(.secondary)
+                        Text(voiceLine).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1)
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
+                    }
+                }.buttonStyle(.plain)
                 Button { openPanel() } label: { Label("Open Project…", systemImage: "folder").frame(maxWidth: .infinity) }
                     .buttonStyle(.borderedProminent).controlSize(.large)
                 Button { importVideo() } label: { Label("New from Video…", systemImage: "film").frame(maxWidth: .infinity) }
@@ -62,13 +69,18 @@ struct WelcomeView: View {
             .background(Color(white: 0.1))
         }
         .preferredColorScheme(.dark)
-        .task { recents = Self.scan() }
+        .task {
+            recents = Self.scan()
+            let v = AppSettings.load().voice
+            voiceLine = v.isConfigured ? "Narrator: \(v.voiceName ?? "voice") (\(v.provider == "openai" ? "OpenAI" : "ElevenLabs"))" : "Narration off — set up a voice"
+        }
     }
 
     static func scan() -> [RecentProject] {
         var out: [RecentProject] = []
         let fm = FileManager.default
-        let root = URL(fileURLWithPath: "/Volumes/Master Storage/Projects")
+        let custom = AppSettings.load().projectsRoot
+        let root = URL(fileURLWithPath: custom ?? "/Volumes/Master Storage/Projects")
         guard let projects = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return [] }
         for p in projects {
             for sub in ["video", "exports", "marketing"] {

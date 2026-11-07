@@ -7,6 +7,9 @@ import PrettyCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var editors: [URL: (NSWindow, EditorModel)] = [:]
     var welcome: NSWindow?
+    var onboarding: NSWindow?
+    var settingsWindow: NSWindow?
+    lazy var setup = SetupModel()
     var openedAtLaunch = false
     var keyMonitor: Any?
 
@@ -16,12 +19,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if Installer.offerMoveIfNeeded() { return }
         // Projects passed on the command line (pretty open / direct launch).
         for arg in CommandLine.arguments.dropFirst() where arg.hasSuffix(".prettystudio") || arg.hasSuffix("project.json") {
             open(URL(fileURLWithPath: arg))
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [self] in
-            if editors.isEmpty { showWelcome() }
+            if editors.isEmpty {
+                if !setup.settings.onboardingComplete || CommandLine.arguments.contains("--onboarding") { showOnboarding() } else { showWelcome() }
+            }
         }
         installKeys()
         NSApp.activate(ignoringOtherApps: true)
@@ -64,10 +70,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc func showOnboarding() {
+        if let w = onboarding { w.makeKeyAndOrderFront(nil); return }
+        setup.runChecks()
+        let host = NSHostingController(rootView: OnboardingView(m: setup) { [weak self] _ in
+            guard let self else { return }
+            self.onboarding?.close(); self.onboarding = nil
+            if self.editors.isEmpty { self.showWelcome() }
+        })
+        let w = NSWindow(contentViewController: host)
+        w.styleMask = [.titled, .closable, .fullSizeContentView]
+        w.titlebarAppearsTransparent = true
+        w.titleVisibility = .hidden
+        w.isMovableByWindowBackground = true
+        w.title = "Welcome to Pretty Studio"
+        w.setContentSize(NSSize(width: 780, height: 640))
+        w.center()
+        w.isReleasedWhenClosed = false
+        w.makeKeyAndOrderFront(nil)
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: w, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.setup.stopPlayback()
+                self?.onboarding = nil
+                if self?.editors.isEmpty == true && self?.welcome == nil { self?.showWelcome() }
+            }
+        }
+        onboarding = w
+        welcome?.close(); welcome = nil
+    }
+
+    @objc func showSettings() {
+        if let w = settingsWindow { w.makeKeyAndOrderFront(nil); return }
+        setup.runChecks()
+        let host = NSHostingController(rootView: SettingsView(m: setup, reopenOnboarding: { [weak self] in
+            self?.settingsWindow?.close(); self?.showOnboarding()
+        }))
+        let w = NSWindow(contentViewController: host)
+        w.styleMask = [.titled, .closable]
+        w.title = "Settings"
+        w.center()
+        w.isReleasedWhenClosed = false
+        w.makeKeyAndOrderFront(nil)
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: w, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.setup.stopPlayback(); self?.settingsWindow = nil }
+        }
+        settingsWindow = w
+    }
+
     func showWelcome() {
         if let w = welcome { w.makeKeyAndOrderFront(nil); return }
         let host = NSHostingController(rootView: WelcomeView(open: { [weak self] u in self?.open(u) }, openPanel: { [weak self] in self?.openPanel() },
-                                                             importVideo: { [weak self] in self?.importVideo() }))
+                                                             importVideo: { [weak self] in self?.importVideo() },
+                                                             settings: { [weak self] in self?.showSettings() }))
         let w = NSWindow(contentViewController: host)
         w.title = "Pretty Studio"
         w.setContentSize(NSSize(width: 760, height: 520))
@@ -133,6 +187,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appItem = NSMenuItem(); main.addItem(appItem)
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About Pretty Studio", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
+        appMenu.addItem(withTitle: "Welcome Tour…", action: #selector(showOnboarding), keyEquivalent: "")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide Pretty Studio", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(withTitle: "Quit Pretty Studio", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")

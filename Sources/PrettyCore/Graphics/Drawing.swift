@@ -154,12 +154,18 @@ public func attributed(_ text: String, _ style: TextStyle) -> NSAttributedString
     var align = style.alignment
     let lh = CTFontGetSize(style.font) * style.lineHeight
     var minLH = lh, maxLH = lh
-    let settings: [CTParagraphStyleSetting] = [
-        CTParagraphStyleSetting(spec: .alignment, valueSize: MemoryLayout<CTTextAlignment>.size, value: &align),
-        CTParagraphStyleSetting(spec: .minimumLineHeight, valueSize: MemoryLayout<CGFloat>.size, value: &minLH),
-        CTParagraphStyleSetting(spec: .maximumLineHeight, valueSize: MemoryLayout<CGFloat>.size, value: &maxLH),
-    ]
-    let para = CTParagraphStyleCreate(settings, settings.count)
+    let para = withUnsafeMutablePointer(to: &align) { ap in
+        withUnsafeMutablePointer(to: &minLH) { mp in
+            withUnsafeMutablePointer(to: &maxLH) { xp -> CTParagraphStyle in
+                let settings: [CTParagraphStyleSetting] = [
+                    CTParagraphStyleSetting(spec: .alignment, valueSize: MemoryLayout<CTTextAlignment>.size, value: ap),
+                    CTParagraphStyleSetting(spec: .minimumLineHeight, valueSize: MemoryLayout<CGFloat>.size, value: mp),
+                    CTParagraphStyleSetting(spec: .maximumLineHeight, valueSize: MemoryLayout<CGFloat>.size, value: xp),
+                ]
+                return CTParagraphStyleCreate(settings, settings.count)
+            }
+        }
+    }
     let attrs: [NSAttributedString.Key: Any] = [
         NSAttributedString.Key(kCTFontAttributeName as String): style.font,
         NSAttributedString.Key(kCTForegroundColorAttributeName as String): style.color.cg,

@@ -11,6 +11,8 @@ public final class Studio {
     public let videoURL: URL?
     public let cameraURL: URL?
     public let asset: AVURLAsset?
+    /// Loaded track info for the source video (nil for title cards).
+    public let assetInfo: AssetInfo?
     /// Display size of the source video (after its preferred transform).
     public let videoSize: CGSize
     public let videoTransform: CGAffineTransform
@@ -43,17 +45,17 @@ public final class Studio {
         cameraURL = res(project.source.camera)
         if let v = videoURL {
             guard FileManager.default.fileExists(atPath: v.path) else { throw fail("source video missing: \(v.path)") }
-            let a = AVURLAsset(url: v, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
-            asset = a
-            guard let track = a.tracks(withMediaType: .video).first else { throw fail("no video track in \(v.lastPathComponent)") }
-            let t = track.preferredTransform
-            let r = CGRect(origin: .zero, size: track.naturalSize).applying(t)
-            videoSize = CGSize(width: abs(r.width), height: abs(r.height))
-            videoTransform = t
-            sourceDuration = CMTimeGetSeconds(a.duration)
-            sourceFPS = Double(track.nominalFrameRate > 0 ? track.nominalFrameRate : 60)
+            let info = try AssetInfo.load(v)
+            guard info.videoTrack != nil else { throw fail("no video track in \(v.lastPathComponent)") }
+            assetInfo = info
+            asset = info.asset
+            videoSize = info.displaySize
+            videoTransform = info.transform
+            sourceDuration = info.duration
+            sourceFPS = info.fps
         } else {
             asset = nil
+            assetInfo = nil
             videoSize = CGSize(width: 1920, height: 1080)
             videoTransform = .identity
             sourceDuration = project.duration ?? 4
@@ -98,6 +100,44 @@ public final class Studio {
     }
 
     public var outputDuration: Double { map.outputDuration }
+
+    // MARK: Soundtrack
+
+    public var hasVoice: Bool { project.audio.voiceover.contains { FileManager.default.fileExists(atPath: resolve($0.path).path) } }
+    public var hasMusic: Bool { project.audio.music.path.map { FileManager.default.fileExists(atPath: resolve($0).path) } ?? false }
+
+    public func audioPlan(preset: String?) -> AudioPlan {
+        AudioPlan.resolve(project.audio, preset: preset ?? project.export.preset, hasVoice: hasVoice, hasMusic: hasMusic)
+    }
+
+    /// Voiceover clips with their OUTPUT start times (source-time clips follow the edit).
+    public func voiceClips() -> [(at: Double, clip: VoiceClip)] {
+        project.audio.voiceover.map { c in (c.time == "source" ? map.output(atSource: c.at) : c.at, c) }.sorted { $0.at < $1.at }
+    }
+
+    /// Captions to burn in: manual/SRT items plus word-timed voiceover captions when narration is in the mix.
+    public func captions(preset: String?) -> [CaptionItem] {
+        var items = captions
+        if project.captions.fromVoiceover && audioPlan(preset: preset).voice {
+            items += AudioPlan.captions(from: voiceClips(), maxWords: max(2, project.captions.maxWords))
+        }
+        return items.sorted { $0.start < $1.start }
+    }
+
+    /// Music + voice credits for this soundtrack as rendered for `preset`.
+    public func credits(preset: String?) -> (text: String, lines: [String], onScreen: String?) {
+        let plan = audioPlan(preset: preset)
+        let vp = plan.voice ? Narrator.resolve(project.audio.voice).map(\.provider) ?? project.audio.voice.provider : nil
+        return MusicLibrary.credits(music: project.audio.music, usedMusic: plan.music, voiceProvider: vp, sfx: (plan.music || plan.voice) && !project.audio.sfx.isEmpty)
+    }
+
+    /// The on-screen music credit, when the license asks for one and it's enabled.
+    public func onScreenCredit(preset: String?) -> String? {
+        guard let line = credits(preset: preset).onScreen else { return nil }
+        let show = project.audio.music.showCredit ?? AppSettings.load().music.creditsOnScreen
+        return show ? line : nil
+    }
+
     public var cropRect: CGRect {
         guard let c = project.source.crop else { return CGRect(origin: .zero, size: videoSize) }
         return CGRect(x: c.x * videoSize.width, y: c.y * videoSize.height, width: c.w * videoSize.width, height: c.h * videoSize.height).integral

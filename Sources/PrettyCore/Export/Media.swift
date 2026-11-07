@@ -2,10 +2,20 @@ import Foundation
 
 /// Thin wrappers around external tools (ffmpeg / ffprobe / node / xcrun).
 public enum Media {
+    /// Find an executable: PATH first (so NVM/Volta/asdf installs win), then common locations.
     public static func which(_ tool: String) -> String? {
-        for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
+        let fm = FileManager.default
+        var dirs = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
+        dirs += ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+        let home = NSHomeDirectory()
+        if let versions = try? fm.contentsOfDirectory(atPath: "\(home)/.nvm/versions/node") {
+            let sorted = versions.sorted { $0.compare($1, options: .numeric) == .orderedDescending }
+            dirs += sorted.map { "\(home)/.nvm/versions/node/\($0)/bin" }
+        }
+        dirs += ["\(home)/.volta/bin", "\(home)/.asdf/shims", "\(home)/.local/bin", "\(home)/.bun/bin"]
+        for dir in dirs where !dir.isEmpty {
             let p = "\(dir)/\(tool)"
-            if FileManager.default.isExecutableFile(atPath: p) { return p }
+            if fm.isExecutableFile(atPath: p) { return p }
         }
         return nil
     }
@@ -41,6 +51,21 @@ public enum Media {
         p.waitUntilExit()
         group.wait()
         return (p.terminationStatus, String(decoding: outData, as: UTF8.self), String(decoding: errData, as: UTF8.self))
+    }
+
+    /// Run a tool and return its raw stdout (e.g. decoded PCM).
+    public static func runData(_ exe: String, _ args: [String]) throws -> Data {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: exe)
+        p.arguments = args
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        try p.run()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        guard p.terminationStatus == 0 else { throw fail("\(URL(fileURLWithPath: exe).lastPathComponent) failed (\(p.terminationStatus))") }
+        return data
     }
 
     public static func ffmpegRun(_ args: [String]) throws {
@@ -128,5 +153,59 @@ public enum Media {
         for i in 0..<n { let v = Int16(clamp(Double(mix[i]), -1, 1) * 22000); pcm[i * 2] = v; pcm[i * 2 + 1] = v }
         pcm.withUnsafeBufferPointer { data.append(Data(buffer: $0)) }
         try data.write(to: url)
+    }
+
+    /// Mix sound effects into one stereo track offline (one ffmpeg input instead of an amix fan-out).
+    public static func sfxTrack(clips: [(url: URL, at: Double, volume: Double)], duration: Double, to url: URL) throws {
+        let sr = 48000
+        let n = max(1, Int(duration * Double(sr)))
+        var l = [Float](repeating: 0, count: n), r = [Float](repeating: 0, count: n)
+        var decoded: [String: [Float]] = [:]
+        for c in clips {
+            let pcm: [Float]
+            if let d = decoded[c.url.path] { pcm = d } else {
+                let data = try runData(ffmpeg, ["-hide_banner", "-loglevel", "error", "-i", c.url.path, "-ac", "2", "-ar", "\(sr)", "-f", "f32le", "-"])
+                pcm = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+                decoded[c.url.path] = pcm
+            }
+            let start = Int(c.at * Double(sr))
+            var i = 0
+            while i + 1 < pcm.count {
+                let k = start + i / 2
+                if k >= n { break }
+                if k >= 0 { l[k] += pcm[i] * Float(c.volume); r[k] += pcm[i + 1] * Float(c.volume) }
+                i += 2
+            }
+        }
+        var data = Data()
+        func u32(_ v: UInt32) { var x = v.littleEndian; data.append(Data(bytes: &x, count: 4)) }
+        func u16(_ v: UInt16) { var x = v.littleEndian; data.append(Data(bytes: &x, count: 2)) }
+        data.append("RIFF".data(using: .ascii)!); u32(UInt32(36 + n * 4)); data.append("WAVE".data(using: .ascii)!)
+        data.append("fmt ".data(using: .ascii)!); u32(16); u16(1); u16(2); u32(UInt32(sr)); u32(UInt32(sr * 4)); u16(4); u16(16)
+        data.append("data".data(using: .ascii)!); u32(UInt32(n * 4))
+        var out = [Int16](repeating: 0, count: n * 2)
+        // Soft clip so stacked hits never crackle.
+        for i in 0..<n {
+            out[i * 2] = Int16(tanh(Double(l[i])) * 32000)
+            out[i * 2 + 1] = Int16(tanh(Double(r[i])) * 32000)
+        }
+        out.withUnsafeBufferPointer { data.append(Data(buffer: $0)) }
+        try data.write(to: url)
+    }
+
+    /// Integrated loudness (LUFS) of an audio file, via ffmpeg's EBU R128 meter.
+    public static func integratedLoudness(_ url: URL) -> Double? {
+        guard let r = try? run(ffmpeg, ["-hide_banner", "-nostats", "-i", url.path, "-af", "ebur128=framelog=quiet", "-f", "null", "-"]) else { return nil }
+        let lines = r.err.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard let l = lines.last(where: { $0.hasPrefix("I:") }) else { return nil }
+        return Double(l.dropFirst(2).trimmingCharacters(in: .whitespaces).split(separator: " ").first ?? "")
+    }
+
+    /// RMS level (dBFS) of a stretch of a file's audio.
+    public static func rms(_ url: URL, from: Double, length: Double) -> Double? {
+        guard let r = try? run(ffmpeg, ["-hide_banner", "-nostats", "-ss", String(format: "%.3f", from), "-t", String(format: "%.3f", max(0.05, length)),
+                                        "-i", url.path, "-af", "astats=metadata=0", "-f", "null", "-"]) else { return nil }
+        guard let l = r.err.split(separator: "\n").last(where: { $0.contains("RMS level dB") }) else { return nil }
+        return Double(l.split(separator: ":").last?.trimmingCharacters(in: .whitespaces) ?? "")
     }
 }

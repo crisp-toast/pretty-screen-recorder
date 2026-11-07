@@ -23,13 +23,13 @@ public final class FrameSource {
     /// `ranges`: source-time ranges that will be requested, in order. `offset` shifts the
     /// request time (for a camera clip that started slightly before/after the screen).
     public init(url: URL, ranges: [(Double, Double)], offset: Double = 0) throws {
-        asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
-        guard let t = asset.tracks(withMediaType: .video).first else { throw fail("no video track in \(url.lastPathComponent)") }
+        let info = try AssetInfo.load(url)
+        guard let t = info.videoTrack else { throw fail("no video track in \(url.lastPathComponent)") }
+        asset = info.asset
         track = t
-        transform = t.preferredTransform
-        let r = CGRect(origin: .zero, size: t.naturalSize).applying(transform)
-        displaySize = CGSize(width: abs(r.width), height: abs(r.height))
-        duration = CMTimeGetSeconds(asset.duration)
+        transform = info.transform
+        displaySize = info.displaySize
+        duration = info.duration
         self.offset = offset
         self.ranges = ranges.map { ($0.0 + offset, $0.1 + offset) }
     }

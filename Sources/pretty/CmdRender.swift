@@ -146,33 +146,62 @@ func cmdGuide() throws {
 
 func cmdOpen(_ a: Args) throws {
     let b = try bundleArg(a)
-    let app = Home.root.appendingPathComponent("dist/Pretty Studio.app")
-    guard FileManager.default.fileExists(atPath: app.path) else { throw fail("editor app not built: run scripts/build.sh") }
+    guard let app = Home.appBundle else { throw fail("editor app not found: run scripts/build.sh or install Pretty Studio.app") }
     let r = try Media.run("/usr/bin/open", ["-a", app.path, Studio.locate(b).base.path])
     emit(["ok": r.status == 0, "app": app.path])
 }
 
+/// Installed browsers Playwright can drive, as (channel, path). `chromium` = Playwright's own build.
+func detectBrowsers() -> [(String, String)] {
+    let fm = FileManager.default
+    let home = NSHomeDirectory()
+    var found: [(String, String)] = []
+    for (channel, app) in [("chrome", "Google Chrome.app"), ("chrome-beta", "Google Chrome Beta.app"), ("msedge", "Microsoft Edge.app")] {
+        for dir in ["/Applications", "\(home)/Applications"] where fm.fileExists(atPath: "\(dir)/\(app)") {
+            found.append((channel, "\(dir)/\(app)")); break
+        }
+    }
+    let cache = ProcessInfo.processInfo.environment["PLAYWRIGHT_BROWSERS_PATH"].map { ($0 as NSString).expandingTildeInPath }
+        ?? "\(home)/Library/Caches/ms-playwright"
+    if let items = try? fm.contentsOfDirectory(atPath: cache), let c = items.filter({ $0.hasPrefix("chromium") }).sorted().last {
+        found.append(("chromium", "\(cache)/\(c)"))
+    }
+    return found
+}
+
 func cmdDoctor() throws {
     var checks: [[String: Any]] = []
-    func check(_ name: String, _ ok: Bool, _ detail: String) { checks.append(["check": name, "ok": ok, "detail": detail]) }
+    func check(_ name: String, _ ok: Bool, _ detail: String, required: Bool = true) {
+        checks.append(["check": name, "ok": ok, "detail": detail, "required": required])
+    }
     check("ffmpeg", Media.which("ffmpeg") != nil, Media.which("ffmpeg") ?? "brew install ffmpeg")
     check("ffprobe", Media.which("ffprobe") != nil, Media.which("ffprobe") ?? "brew install ffmpeg")
     let node = Media.which("node")
-    check("node", node != nil, node ?? "install node")
+    check("node", node != nil, node ?? "install Node.js (found via PATH, NVM, Volta, asdf or Homebrew)")
     let pw = Home.root.appendingPathComponent("web-recorder/node_modules/playwright-core").path
     check("playwright-core", FileManager.default.fileExists(atPath: pw), FileManager.default.fileExists(atPath: pw) ? pw : "cd web-recorder && npm install")
-    let chrome = "/Applications/Google Chrome.app"
-    check("google-chrome", FileManager.default.fileExists(atPath: chrome), FileManager.default.fileExists(atPath: chrome) ? chrome : "web recording uses installed Google Chrome")
-    check("master-storage", Home.masterStorageMounted, Home.masterStorageMounted ? Home.masterStorage : "not mounted — pass -o paths explicitly")
+    let browsers = detectBrowsers()
+    check("browser", !browsers.isEmpty, browsers.isEmpty
+          ? "install Google Chrome, or run `npx playwright install chromium` in web-recorder/ (storyboard \"channel\": \"chromium\")"
+          : browsers.map { "\($0.0): \($0.1)" }.joined(separator: "; ") + " — the recorder tries these in order unless the storyboard sets \"channel\"")
+    let out = Home.projectsRoot
+    check("default-output", out != nil, out.map { "\($0.path)/<project>/video" } ?? "none: pass -o <path> or set PRETTY_PROJECTS_DIR", required: false)
     check("screen-recording-permission", CGPreflightScreenCaptureAccess(), CGPreflightScreenCaptureAccess() ? "granted to the host app" :
-          "grant Screen Recording to the app running pretty (System Settings → Privacy & Security)")
+          "needed only for `record screen`: grant Screen Recording to the app running pretty (System Settings → Privacy & Security)", required: false)
     let simctl = (try? Media.run("/usr/bin/xcrun", ["simctl", "help"]))?.status == 0
-    check("simctl", simctl, simctl ? "available" : "Xcode command line tools needed for `record sim`")
+    check("simctl", simctl, simctl ? "available" : "needed only for `record sim`: install Xcode", required: false)
+    let narr = Narrator.resolve(nil)
+    check("narration", narr != nil, narr.map { "\($0.voiceName) — \($0.provider) \($0.model)" }
+          ?? "off: \(Narrator.unavailableReason(nil)). Videos still work: on-screen type carries the story.", required: false)
+    let lib = MusicLibrary.licensed().count
+    let incompetech = AppSettings.load().music.useIncompetech
+    check("music", incompetech || lib > 0, (incompetech ? "Kevin MacLeod catalog (CC BY 4.0, credited automatically)" : "catalog off")
+          + (lib > 0 ? " + \(lib) licensed tracks" : "") + "; downloads go to \(Paths.musicLibrary.path)", required: false)
     check("gpu", MTLCreateSystemDefaultDeviceAvailable(), "Metal")
-    let app = Home.root.appendingPathComponent("dist/Pretty Studio.app").path
-    check("editor-app", FileManager.default.fileExists(atPath: app), app)
-    emit(["ok": checks.allSatisfy { ($0["ok"] as? Bool) ?? false || ["editor-app", "simctl", "screen-recording-permission"].contains($0["check"] as! String) },
-          "home": Home.root.path, "checks": checks])
+    let app = Home.appBundle?.path
+    check("editor-app", app != nil, app ?? "run scripts/build.sh", required: false)
+    let ok = checks.allSatisfy { ($0["ok"] as? Bool) == true || ($0["required"] as? Bool) == false }
+    emit(["ok": ok, "home": Home.root.path, "checks": checks])
 }
 
 import Metal

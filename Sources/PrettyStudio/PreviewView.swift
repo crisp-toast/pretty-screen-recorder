@@ -43,7 +43,7 @@ final class ClickableMTKView: MTKView {
     }
 }
 
-final class PreviewRenderer: NSObject, MTKViewDelegate {
+final class PreviewRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
     var model: EditorModel
     let device = MTLCreateSystemDefaultDevice()!
     lazy var queue = device.makeCommandQueue()!

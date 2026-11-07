@@ -151,14 +151,24 @@ final class EditorModel: ObservableObject {
 
     func rebuildPlayer() {
         lastMapSignature = "\(project.timeline)"
-        guard let asset = studio.asset, let vtrack = asset.tracks(withMediaType: .video).first else { return }
+        guard let info = studio.assetInfo, let vtrack = info.videoTrack else { return }
         let comp = AVMutableComposition()
         guard let cv = comp.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else { return }
-        let audioSrc = asset.tracks(withMediaType: .audio)
+        let audioSrc = info.audioTracks
         let ca = audioSrc.compactMap { _ in comp.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) }
         var at = CMTime.zero
         let ts: CMTimeScale = 60000
         for seg in studio.map.segments {
+            if seg.isHold {
+                // Freeze-frame: one frame of video stretched to the hold, silence for audio.
+                let frame = CMTimeRange(start: CMTime(seconds: seg.srcStart, preferredTimescale: ts), duration: CMTime(value: 1, timescale: 60))
+                let hold = CMTime(seconds: seg.holdDuration, preferredTimescale: ts)
+                try? cv.insertTimeRange(frame, of: vtrack, at: at)
+                cv.scaleTimeRange(CMTimeRange(start: at, duration: frame.duration), toDuration: hold)
+                for track in ca { track.insertEmptyTimeRange(CMTimeRange(start: at, duration: hold)) }
+                at = at + hold
+                continue
+            }
             let r = CMTimeRange(start: CMTime(seconds: seg.srcStart, preferredTimescale: ts), end: CMTime(seconds: seg.srcEnd, preferredTimescale: ts))
             try? cv.insertTimeRange(r, of: vtrack, at: at)
             for (i, a) in audioSrc.enumerated() where i < ca.count { try? ca[i].insertTimeRange(r, of: a, at: at) }
@@ -170,7 +180,7 @@ final class EditorModel: ObservableObject {
             }
             at = at + dur
         }
-        cv.preferredTransform = vtrack.preferredTransform
+        cv.preferredTransform = info.transform
         let item = AVPlayerItem(asset: comp)
         let out = AVPlayerItemVideoOutput(pixelBufferAttributes: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
@@ -285,6 +295,92 @@ final class EditorModel: ObservableObject {
         project.timeline.cuts = []
         project.timeline.speed = project.timeline.speed.filter { !$0.auto }
         splits = []
+    }
+
+    // MARK: Soundtrack
+
+    /// Narration error to show (no voice set up, network failure).
+    @Published var narrationError: String? = nil
+    @Published var narrating = false
+
+    /// Speak a line at an output time with the studio voice (ElevenLabs / OpenAI), off the main thread.
+    func addNarration(_ text: String, at t: Double) {
+        let dir = studio.baseURL.appendingPathComponent("sources/vo")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let name = String(format: "vo_%02d_%d", project.audio.voiceover.count, Int(Date().timeIntervalSince1970) % 100000)
+        let spec = project.audio.voice
+        guard Narrator.isAvailable(spec) else { narrationError = Narrator.unavailableReason(spec); return }
+        narrating = true
+        Task.detached {
+            do {
+                let sp = try Narrator.synthesize(text, spec: spec, to: dir.appendingPathComponent(name))
+                await MainActor.run {
+                    self.narrating = false
+                    self.project.audio.voiceover.append(VoiceClip(path: "sources/vo/\(URL(fileURLWithPath: sp.file).lastPathComponent)", at: round3(t),
+                                                                  text: sp.text, duration: sp.duration, words: sp.words, time: "output"))
+                    self.project.audio.voiceover.sort { $0.at < $1.at }
+                    if self.project.audio.mode == "music" || self.project.audio.mode == "none" { self.project.audio.mode = "both" }
+                }
+            } catch {
+                await MainActor.run { self.narrating = false; self.narrationError = "\(error)" }
+            }
+        }
+    }
+
+    @Published var usingTrack: String? = nil
+
+    /// Use a real track (catalog or licensed library): download, analyze tempo, copy into the bundle.
+    func useTrack(_ t: MusicLibrary.Track) {
+        usingTrack = t.id
+        let base = studio.baseURL
+        let hasVoice = !project.audio.voiceover.isEmpty
+        Task.detached {
+            var spec = try? MusicLibrary.spec(for: t)
+            if let s = spec?.path {
+                let src = URL(fileURLWithPath: s)
+                let dst = base.appendingPathComponent("sources/music.\(src.pathExtension)")
+                try? FileManager.default.removeItem(at: dst)
+                if (try? FileManager.default.copyItem(at: src, to: dst)) != nil { spec?.path = "sources/music.\(src.pathExtension)" }
+                spec?.volume = hasVoice ? 0.2 : 0.6
+            }
+            let final = spec
+            await MainActor.run {
+                self.usingTrack = nil
+                if let spec = final {
+                    self.project.audio.music = spec
+                    if self.project.audio.mode == "voiceover" || self.project.audio.mode == "none" { self.project.audio.mode = hasVoice ? "both" : "music" }
+                }
+            }
+        }
+    }
+
+    func setMusic(_ u: URL) {
+        project.audio.music.path = u.path
+        project.audio.music.generate = nil
+        let url = u
+        Task.detached {
+            let r = try? BeatDetect.analyze(url)
+            await MainActor.run { self.project.audio.music.bpm = r?.bpm; self.project.audio.music.beatOffset = r?.firstBeat }
+        }
+    }
+
+    func generateMusic(mood: String, bpm: Double?, done: @escaping () -> Void) {
+        var g = MusicGenSpec(); g.mood = mood; g.bpm = bpm
+        let out = studio.baseURL.appendingPathComponent("sources/music.wav")
+        let dur = duration
+        Task.detached {
+            let r = try? MusicGen.render(g, duration: dur, to: out)
+            await MainActor.run {
+                if let r {
+                    self.project.audio.music.path = "sources/music.wav"; self.project.audio.music.bpm = r.bpm
+                    self.project.audio.music.beatOffset = 0; self.project.audio.music.offset = 0; self.project.audio.music.generate = g
+                    self.project.audio.music.track = nil; self.project.audio.music.title = "Original score"; self.project.audio.music.artist = "Pretty Studio"
+                    self.project.audio.music.license = MusicLicense(name: "Generated (Pretty Studio)", source: "generated")
+                    if self.project.audio.mode == "voiceover" || self.project.audio.mode == "none" { self.project.audio.mode = "both" }
+                }
+                done()
+            }
+        }
     }
 
     // MARK: Auto

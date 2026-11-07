@@ -166,14 +166,18 @@ func recordSim(_ a: Args) throws {
     try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
     let video = sources.appendingPathComponent("screen.mov")
     try? FileManager.default.removeItem(at: video)
+    // simctl can't write to external volumes without a privacy prompt: capture to the internal
+    // temp folder, then move the file into the bundle.
+    let capture = FileManager.default.temporaryDirectory.appendingPathComponent("pretty-sim-\(UUID().uuidString.prefix(8)).mov")
     let cleanBar = !a.has("keep-status-bar")
     if cleanBar {
-        _ = try? Media.run("/usr/bin/xcrun", ["simctl", "status_bar", device, "override", "--time", "9:41", "--batteryState", "charged",
+        // Marketing status bar: 9:41, full (not charging) battery, full signal.
+        _ = try? Media.run("/usr/bin/xcrun", ["simctl", "status_bar", device, "override", "--time", "9:41", "--batteryState", "discharging",
                                               "--batteryLevel", "100", "--cellularMode", "active", "--cellularBars", "4", "--wifiBars", "3", "--dataNetwork", "wifi"])
     }
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-    p.arguments = ["simctl", "io", device, "recordVideo", "--codec=h264", "--force", video.path]
+    p.arguments = ["simctl", "io", device, "recordVideo", "--codec=h264", "--force", capture.path]
     let errPipe = Pipe()
     p.standardError = errPipe
     p.standardOutput = FileHandle.nullDevice
@@ -197,6 +201,10 @@ func recordSim(_ a: Args) throws {
     p.interrupt()
     p.waitUntilExit()
     if cleanBar { _ = try? Media.run("/usr/bin/xcrun", ["simctl", "status_bar", device, "clear"]) }
+    if FileManager.default.fileExists(atPath: capture.path) {
+        try? FileManager.default.removeItem(at: video)
+        try FileManager.default.moveItem(at: capture, to: video)
+    }
     guard FileManager.default.fileExists(atPath: video.path), let probe = try? Media.probe(video), probe.width > 0 else {
         RecordingState.clear()
         throw fail("simulator video missing or empty")

@@ -25,6 +25,12 @@ public struct Project: Codable, Equatable {
     public var frame = FrameSpec()
     public var motion = MotionSpec()
     public var overlays: [Overlay] = []
+    /// Full-screen kinetic type scenes (OUTPUT time): the recording steps aside while they play.
+    public var scenes: [TextScene] = []
+    /// Device moves (OUTPUT time): rise, tilt, orbit, push, drift, float — motion of the flat device.
+    public var moves: [DeviceMove] = []
+    /// Real 3D device shots (OUTPUT time), rendered with Blender; they replace the flat device while they play.
+    public var shots: [DeviceShot] = []
     public var captions = CaptionSpec()
     public var audio = AudioSpec()
     public var export = ExportSpec()
@@ -34,7 +40,7 @@ public struct Project: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case version, name, source, duration, timeline, zoom, cursor, keystrokes, camera, background,
-             layout, frame, motion, overlays, captions, audio, export, brand
+             layout, frame, motion, overlays, scenes, moves, shots, captions, audio, export, brand
     }
 
     public init(from d: Decoder) throws {
@@ -54,6 +60,9 @@ public struct Project: Codable, Equatable {
         frame = try c.v(.frame, z.frame)
         motion = try c.v(.motion, z.motion)
         overlays = try c.v(.overlays, z.overlays)
+        scenes = try c.v(.scenes, z.scenes)
+        moves = try c.v(.moves, z.moves)
+        shots = try c.v(.shots, z.shots)
         captions = try c.v(.captions, z.captions)
         audio = try c.v(.audio, z.audio)
         export = try c.v(.export, z.export)
@@ -157,19 +166,34 @@ public struct IdleSpec: Codable, Equatable {
     }
 }
 
+/// A freeze-frame: hold the source frame at `at` for `duration` output seconds.
+public struct HoldRange: Codable, Equatable {
+    public var at: Double
+    public var duration: Double
+    public var auto: Bool = false
+    public init(at: Double, duration: Double, auto: Bool = false) { self.at = at; self.duration = duration; self.auto = auto }
+    enum CodingKeys: String, CodingKey { case at, duration, auto }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        at = try c.decode(Double.self, forKey: .at); duration = try c.decode(Double.self, forKey: .duration); auto = try c.v(.auto, false)
+    }
+}
+
 public struct TimelineSpec: Codable, Equatable {
     public var trimStart: Double = 0
     public var trimEnd: Double? = nil
     public var cuts: [TimeRange] = []
     public var speed: [SpeedRange] = []
+    /// Freeze-frames (source time) — used by `pretty conform` to give an action room to breathe.
+    public var holds: [HoldRange] = []
     public var idle = IdleSpec()
     public init() {}
-    enum CodingKeys: String, CodingKey { case trimStart, trimEnd, cuts, speed, idle }
+    enum CodingKeys: String, CodingKey { case trimStart, trimEnd, cuts, speed, holds, idle }
     public init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self); let z = TimelineSpec()
         trimStart = try c.v(.trimStart, z.trimStart)
         trimEnd = try c.decodeIfPresent(Double.self, forKey: .trimEnd)
-        cuts = try c.v(.cuts, z.cuts); speed = try c.v(.speed, z.speed); idle = try c.v(.idle, z.idle)
+        cuts = try c.v(.cuts, z.cuts); speed = try c.v(.speed, z.speed); holds = try c.v(.holds, z.holds); idle = try c.v(.idle, z.idle)
     }
 }
 
@@ -204,8 +228,8 @@ public struct ZoomSegment: Codable, Equatable {
 public struct ZoomSpec: Codable, Equatable {
     /// Generate Smart Zooms from clicks/typing when the project is created or `pretty auto` runs.
     public var auto: Bool = true
-    /// Default zoom level for new zooms.
-    public var level: Double = 1.6
+    /// Default zoom level for new zooms (walkthrough-friendly; context-framed zooms compute their own).
+    public var level: Double = 1.45
     /// Default zoom mode for new zooms: follow | manual
     public var mode: String = "follow"
     public var segments: [ZoomSegment] = []
@@ -330,8 +354,8 @@ public struct BackgroundSpec: Codable, Equatable {
     public var image: String? = nil
     /// Blur radius applied to image backgrounds (and the recording for type=blur), in output points.
     public var blur: Double = 0
-    /// Film grain amount 0-1 (prevents banding on big gradients).
-    public var grain: Double = 0.35
+    /// Film grain 0-1 (off by default; an invisible sub-LSB dither already prevents banding).
+    public var grain: Double = 0
     public init() {}
     enum CodingKeys: String, CodingKey { case type, preset, colors, angle, color, image, blur, grain }
     public init(from d: Decoder) throws {
@@ -457,11 +481,13 @@ public struct Overlay: Codable, Equatable {
     public var dim: Double = 0.6
     public var amount: Double = 18
     public var radius: Double = 0.012
+    /// Optional tag ("headline" = made by a directed plan; replaced when it's re-applied).
+    public var id: String? = nil
     public init() {}
 
     enum CodingKeys: String, CodingKey {
         case type, start, end, time, text, style, position, x, y, size, color, fill, font, weight, animation, maxWidth,
-             path, width, rect, dim, amount, radius
+             path, width, rect, dim, amount, radius, id
     }
     public init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self); let z = Overlay()
@@ -476,6 +502,7 @@ public struct Overlay: Codable, Equatable {
         maxWidth = try c.v(.maxWidth, z.maxWidth); path = try c.decodeIfPresent(String.self, forKey: .path)
         width = try c.v(.width, z.width); rect = try c.decodeIfPresent(NRect.self, forKey: .rect)
         dim = try c.v(.dim, z.dim); amount = try c.v(.amount, z.amount); radius = try c.v(.radius, z.radius)
+        id = try c.decodeIfPresent(String.self, forKey: .id)
     }
 
     public var usesSourceTime: Bool {
@@ -504,17 +531,41 @@ public struct CaptionSpec: Codable, Equatable {
     public var position: String = "bottom"
     public var size: Double = 1
     public var theme: String = "dark"
+    /// Generate captions from voiceover lines (word-timed), when voiceover is in the mix.
+    public var fromVoiceover: Bool = true
+    /// Max words per caption chunk.
+    public var maxWords: Int = 6
     public init() {}
-    enum CodingKeys: String, CodingKey { case show, srt, items, style, position, size, theme }
+    enum CodingKeys: String, CodingKey { case show, srt, items, style, position, size, theme, fromVoiceover, maxWords }
     public init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self); let z = CaptionSpec()
         show = try c.v(.show, z.show); srt = try c.decodeIfPresent(String.self, forKey: .srt)
         items = try c.v(.items, z.items); style = try c.v(.style, z.style); position = try c.v(.position, z.position)
         size = try c.v(.size, z.size); theme = try c.v(.theme, z.theme)
+        fromVoiceover = try c.v(.fromVoiceover, z.fromVoiceover); maxWords = try c.v(.maxWords, z.maxWords)
     }
 }
 
 // MARK: - Audio
+
+/// Procedural soundtrack request (`pretty music generate`).
+public struct MusicGenSpec: Codable, Equatable {
+    /// upbeat | corporate | chill | cinematic | minimal
+    public var mood: String = "upbeat"
+    public var bpm: Double? = nil
+    /// Root key, e.g. "C", "F#", "Bb"; minor moods use the relative minor.
+    public var key: String? = nil
+    public var seed: Int = 7
+    /// 0-1: how busy the arrangement is.
+    public var energy: Double = 0.7
+    public init() {}
+    enum CodingKeys: String, CodingKey { case mood, bpm, key, seed, energy }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self); let z = MusicGenSpec()
+        mood = try c.v(.mood, z.mood); bpm = try c.decodeIfPresent(Double.self, forKey: .bpm)
+        key = try c.decodeIfPresent(String.self, forKey: .key); seed = try c.v(.seed, z.seed); energy = try c.v(.energy, z.energy)
+    }
+}
 
 public struct MusicSpec: Codable, Equatable {
     public var path: String? = nil
@@ -525,14 +576,69 @@ public struct MusicSpec: Codable, Equatable {
     public var offset: Double = 0
     /// Lower music under voiceover/mic.
     public var duck: Bool = true
+    /// Tempo and first-downbeat time (seconds into the file), from generation or analysis.
+    public var bpm: Double? = nil
+    public var beatOffset: Double? = nil
+    public var beatsPerBar: Int = 4
+    /// How this track was made (kept so it can be regenerated at a new length).
+    public var generate: MusicGenSpec? = nil
+    /// Catalog reference, e.g. "incompetech:Carefree" or "licensed:Epidemic/Track.mp3".
+    public var track: String? = nil
+    public var title: String? = nil
+    public var artist: String? = nil
+    /// License and the credit line it requires (written to credits.txt and, for CC BY, shown on screen).
+    public var license: MusicLicense? = nil
+    /// Show the credit on screen at the end (nil = the app setting; on by default for CC BY).
+    public var showCredit: Bool? = nil
     public init() {}
-    enum CodingKeys: String, CodingKey { case path, volume, fadeIn, fadeOut, offset, duck }
+    enum CodingKeys: String, CodingKey { case path, volume, fadeIn, fadeOut, offset, duck, bpm, beatOffset, beatsPerBar, generate, track, title, artist, license, showCredit }
     public init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self); let z = MusicSpec()
         path = try c.decodeIfPresent(String.self, forKey: .path); volume = try c.v(.volume, z.volume)
         fadeIn = try c.v(.fadeIn, z.fadeIn); fadeOut = try c.v(.fadeOut, z.fadeOut); offset = try c.v(.offset, z.offset)
-        duck = try c.v(.duck, z.duck)
+        duck = try c.v(.duck, z.duck); bpm = try c.decodeIfPresent(Double.self, forKey: .bpm)
+        beatOffset = try c.decodeIfPresent(Double.self, forKey: .beatOffset); beatsPerBar = try c.v(.beatsPerBar, z.beatsPerBar)
+        generate = try c.decodeIfPresent(MusicGenSpec.self, forKey: .generate)
+        track = try c.decodeIfPresent(String.self, forKey: .track); title = try c.decodeIfPresent(String.self, forKey: .title)
+        artist = try c.decodeIfPresent(String.self, forKey: .artist); license = try c.decodeIfPresent(MusicLicense.self, forKey: .license)
+        showCredit = try c.decodeIfPresent(Bool.self, forKey: .showCredit)
     }
+
+    /// Output-time beat grid for this track (music starts at output 0, `offset` seconds into the file).
+    public var grid: BeatGrid? {
+        guard let bpm, bpm > 20 else { return nil }
+        return BeatGrid(bpm: bpm, firstBeat: (beatOffset ?? 0) - offset, beatsPerBar: beatsPerBar)
+    }
+}
+
+public struct MusicLicense: Codable, Equatable {
+    /// "CC BY 4.0", "Epidemic Sound subscription", "Generated (Pretty Studio)", ...
+    public var name: String
+    public var url: String? = nil
+    /// The exact credit line to publish (nil when none is required).
+    public var credit: String? = nil
+    public var requiresCredit: Bool = false
+    /// incompetech | licensed | generated | file
+    public var source: String = "file"
+    /// Caveats agents must pass on ("verify the license covers paid ads", ...).
+    public var notes: String? = nil
+    public init(name: String, url: String? = nil, credit: String? = nil, requiresCredit: Bool = false, source: String = "file", notes: String? = nil) {
+        self.name = name; self.url = url; self.credit = credit; self.requiresCredit = requiresCredit; self.source = source; self.notes = notes
+    }
+    enum CodingKeys: String, CodingKey { case name, url, credit, requiresCredit, source, notes }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        name = try c.v(.name, "unknown"); url = try c.decodeIfPresent(String.self, forKey: .url)
+        credit = try c.decodeIfPresent(String.self, forKey: .credit); requiresCredit = try c.v(.requiresCredit, false)
+        source = try c.v(.source, "file"); notes = try c.decodeIfPresent(String.self, forKey: .notes)
+    }
+}
+
+public struct WordTime: Codable, Equatable {
+    public var w: String
+    /// Seconds from the start of the clip.
+    public var t: Double
+    public init(w: String, t: Double) { self.w = w; self.t = t }
 }
 
 public struct VoiceClip: Codable, Equatable {
@@ -540,15 +646,69 @@ public struct VoiceClip: Codable, Equatable {
     /// Output time in seconds.
     public var at: Double = 0
     public var volume: Double = 1
-    public init(path: String, at: Double, volume: Double = 1) { self.path = path; self.at = at; self.volume = volume }
-    enum CodingKeys: String, CodingKey { case path, at, volume }
+    /// What is said (drives captions) and when each word starts.
+    public var text: String? = nil
+    public var duration: Double? = nil
+    public var words: [WordTime]? = nil
+    /// output (default) | source — source-time clips stay attached to the content through edits.
+    public var time: String? = nil
+    public init(path: String, at: Double, volume: Double = 1, text: String? = nil, duration: Double? = nil, words: [WordTime]? = nil, time: String? = nil) {
+        self.path = path; self.at = at; self.volume = volume; self.text = text; self.duration = duration; self.words = words; self.time = time
+    }
+    enum CodingKeys: String, CodingKey { case path, at, volume, text, duration, words, time }
     public init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self)
         path = try c.decode(String.self, forKey: .path); at = try c.v(.at, 0); volume = try c.v(.volume, 1)
+        text = try c.decodeIfPresent(String.self, forKey: .text); duration = try c.decodeIfPresent(Double.self, forKey: .duration)
+        words = try c.decodeIfPresent([WordTime].self, forKey: .words)
+        time = try c.decodeIfPresent(String.self, forKey: .time)
+    }
+}
+
+public struct VoiceSpec: Codable, Equatable {
+    /// elevenlabs | openai. nil = the provider chosen in Pretty Studio's setup.
+    /// There is no on-device voice: narration is studio-grade or absent.
+    public var provider: String? = nil
+    /// Voice id or name (ElevenLabs voice_id / name; OpenAI: marin, cedar, coral, ...). nil = setup default.
+    public var voice: String? = nil
+    /// eleven_v4 (default) · eleven_multilingual_v2 · gpt-4o-mini-tts
+    public var model: String? = nil
+    /// Delivery speed (1 = natural; 1.05-1.1 suits ads).
+    public var speed: Double? = nil
+    /// ElevenLabs expressiveness (0-1) and stability (0-1).
+    public var style: Double? = nil
+    public var stability: Double? = nil
+    /// OpenAI delivery direction ("Warm, upbeat product narrator").
+    public var instructions: String? = nil
+    public init() {}
+    enum CodingKeys: String, CodingKey { case provider, voice, model, speed, style, stability, instructions, name, rate }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        provider = try c.decodeIfPresent(String.self, forKey: .provider)
+        voice = try c.decodeIfPresent(String.self, forKey: .voice)
+        // Older projects: {name, rate, pitch} for system voices.
+        if voice == nil, let n = try c.decodeIfPresent(String.self, forKey: .name), n != "auto", !n.isEmpty, provider != nil { voice = n }
+        model = try c.decodeIfPresent(String.self, forKey: .model)
+        speed = try c.decodeIfPresent(Double.self, forKey: .speed)
+        if speed == nil, let r = try c.decodeIfPresent(Double.self, forKey: .rate), r != 1 { speed = r }
+        style = try c.decodeIfPresent(Double.self, forKey: .style)
+        stability = try c.decodeIfPresent(Double.self, forKey: .stability)
+        instructions = try c.decodeIfPresent(String.self, forKey: .instructions)
+    }
+    public func encode(to e: Encoder) throws {
+        var c = e.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(provider, forKey: .provider); try c.encodeIfPresent(voice, forKey: .voice)
+        try c.encodeIfPresent(model, forKey: .model); try c.encodeIfPresent(speed, forKey: .speed)
+        try c.encodeIfPresent(style, forKey: .style); try c.encodeIfPresent(stability, forKey: .stability)
+        try c.encodeIfPresent(instructions, forKey: .instructions)
     }
 }
 
 public struct AudioSpec: Codable, Equatable {
+    /// What the soundtrack carries: auto | none | music | voiceover | both.
+    /// "auto" picks per platform (see `AudioPlan.resolve`); agents should set it deliberately.
+    public var mode: String = "auto"
+    public var voice = VoiceSpec()
     /// Include system audio recorded with the screen.
     public var system: Bool = true
     public var systemVolume: Double = 1
@@ -562,14 +722,35 @@ public struct AudioSpec: Codable, Equatable {
     public var clickVolume: Double = 0.5
     /// Loudness-normalize the final mix to -14 LUFS (social standard).
     public var normalize: Bool = true
+    /// Sound design: whooshes on transitions, impacts on reveals (OUTPUT time).
+    public var sfx: [SfxClip] = []
+    public var sfxVolume: Double = 1
     public init() {}
-    enum CodingKeys: String, CodingKey { case system, systemVolume, mic, micVolume, music, voiceover, clickSounds, clickVolume, normalize }
+    enum CodingKeys: String, CodingKey { case mode, voice, system, systemVolume, mic, micVolume, music, voiceover, clickSounds, clickVolume, normalize, sfx, sfxVolume }
     public init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self); let z = AudioSpec()
+        mode = try c.v(.mode, z.mode); voice = try c.v(.voice, z.voice)
         system = try c.v(.system, z.system); systemVolume = try c.v(.systemVolume, z.systemVolume)
         mic = try c.v(.mic, z.mic); micVolume = try c.v(.micVolume, z.micVolume); music = try c.v(.music, z.music)
         voiceover = try c.v(.voiceover, z.voiceover); clickSounds = try c.v(.clickSounds, z.clickSounds)
         clickVolume = try c.v(.clickVolume, z.clickVolume); normalize = try c.v(.normalize, z.normalize)
+        sfx = try c.v(.sfx, z.sfx); sfxVolume = try c.v(.sfxVolume, z.sfxVolume)
+    }
+}
+
+public struct SfxClip: Codable, Equatable {
+    public var path: String
+    /// Output time the sound starts.
+    public var at: Double
+    public var volume: Double = 0.5
+    /// whoosh | impact | shimmer | tap | riser (informational)
+    public var kind: String? = nil
+    public init(path: String, at: Double, volume: Double = 0.5, kind: String? = nil) { self.path = path; self.at = at; self.volume = volume; self.kind = kind }
+    enum CodingKeys: String, CodingKey { case path, at, volume, kind }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        path = try c.decode(String.self, forKey: .path); at = try c.v(.at, 0); volume = try c.v(.volume, 0.5)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind)
     }
 }
 
@@ -598,20 +779,140 @@ public struct ExportSpec: Codable, Equatable {
 
 public struct BrandSpec: Codable, Equatable {
     public var name: String? = nil
-    /// Brand colors; colors like "brand:0" anywhere in the project resolve here.
+    /// Brand colors, most important first; "brand:N" anywhere in the project resolves here.
     public var colors: [String] = []
-    /// Font file or installed font name for text overlays.
+    /// Font file or installed font name for text overlays and scenes.
     public var font: String? = nil
     public var logo: String? = nil
+    /// App icon (square image) for lockups.
+    public var icon: String? = nil
+    /// The product's own one-line promise (from its site/App Store page), for end cards.
+    public var tagline: String? = nil
+    /// Where to get it: "deltabinder.com", "Download on the App Store".
+    public var cta: String? = nil
+    public var url: String? = nil
     public init() {}
-    enum CodingKeys: String, CodingKey { case name, colors, font, logo }
+    enum CodingKeys: String, CodingKey { case name, colors, font, logo, icon, tagline, cta, url }
     public init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self)
         name = try c.decodeIfPresent(String.self, forKey: .name)
         colors = try c.v(.colors, [])
         font = try c.decodeIfPresent(String.self, forKey: .font)
         logo = try c.decodeIfPresent(String.self, forKey: .logo)
+        icon = try c.decodeIfPresent(String.self, forKey: .icon)
+        tagline = try c.decodeIfPresent(String.self, forKey: .tagline)
+        cta = try c.decodeIfPresent(String.self, forKey: .cta)
+        url = try c.decodeIfPresent(String.self, forKey: .url)
     }
+}
+
+/// A 3D device shot: the recording's screen on a real 3D device (phone or tablet), animated by a
+/// camera template. A component of a video — it replaces the flat device for its duration.
+public struct DeviceShot: Codable, Equatable {
+    public var start: Double
+    public var duration: Double
+    /// hero | orbit | rise | tilt | spin | float | flat | dolly | closeup | duo | slide | turntable
+    public var move: String = "hero"
+    /// Device finish (default: frame.color): black | natural | silver | white | blue | desert | gold
+    public var finish: String? = nil
+    /// Glossy floor reflection under the device (Apple-stage look).
+    public var reflection: Bool = false
+    /// closeup: the point of the screen to move in on (normalized 0-1).
+    public var focus: NPoint? = nil
+    /// duo: the second device shows the recording this many seconds later (or earlier, negative).
+    public var offset: Double? = nil
+    public init(start: Double, duration: Double, move: String = "hero") { self.start = start; self.duration = duration; self.move = move }
+    enum CodingKeys: String, CodingKey { case start, duration, move, finish, reflection, focus, offset }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        start = try c.v(.start, 0); duration = try c.v(.duration, 3); move = try c.v(.move, "hero")
+        finish = try c.decodeIfPresent(String.self, forKey: .finish); reflection = try c.v(.reflection, false)
+        focus = try c.decodeIfPresent(NPoint.self, forKey: .focus); offset = try c.decodeIfPresent(Double.self, forKey: .offset)
+    }
+    public var end: Double { start + duration }
+}
+
+/// A move of the device in 3D space (output time). Entrances (rise, tilt) play over their first
+/// second; holds (push, drift, orbit, float) span the whole segment.
+public struct DeviceMove: Codable, Equatable {
+    public var start: Double
+    public var end: Double
+    /// rise | tilt | orbit | push | drift | float
+    public var type: String
+    public var amount: Double = 1
+    public init(start: Double, end: Double, type: String, amount: Double = 1) { self.start = start; self.end = end; self.type = type; self.amount = amount }
+    enum CodingKeys: String, CodingKey { case start, end, type, amount }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        start = try c.v(.start, 0); end = try c.v(.end, 1); type = try c.v(.type, "push"); amount = try c.v(.amount, 1)
+    }
+}
+
+/// A full-screen kinetic-type moment: no device, just the words, on the brand.
+public struct TextScene: Codable, Equatable {
+    /// Output time and length (seconds).
+    public var start: Double = 0
+    public var duration: Double = 2.5
+    /// statement | punch | stack | reveal | type | count | lockup
+    public var style: String = "statement"
+    public var text: String? = nil
+    /// stack/reveal lines (otherwise `text` split on "\n").
+    public var lines: [String]? = nil
+    /// Supporting line (lockup tagline, count label, statement kicker).
+    public var sub: String? = nil
+    /// Words to set in the accent color ("Price", "instantly").
+    public var accent: [String] = []
+    /// Swipe a highlighter behind accent words.
+    public var marker: Bool = false
+    /// When each word (statement/punch/type) or line (stack/reveal) lands, seconds from `start`.
+    /// The planner fills these from narration word timings or the music's beats.
+    public var times: [Double]? = nil
+    /// keynote | studio | glow | paper | cinema | brand | dark | light | content (the recording, blurred)
+    /// | clip:<video path> (e.g. AI B-roll) | a gradient preset | "#RRGGBB"
+    public var background: String = "keynote"
+    public var color: String? = nil
+    public var accentColor: String? = nil
+    /// center | left
+    public var align: String = "center"
+    /// count: the number to land on, with optional prefix/suffix ("$", "+", "k").
+    public var value: Double? = nil
+    public var prefix: String? = nil
+    public var suffix: String? = nil
+    /// lockup: icon (default brand.icon), name (default brand.name), CTA pill (default brand.cta).
+    public var icon: String? = nil
+    public var cta: String? = nil
+    /// auto | dissolve | lift | zoom | fade | slide | cut
+    public var transition: String = "auto"
+    public var transitionDuration: Double = 0.4
+    /// Text size multiplier, font override (a name, a .ttf path, "serif", "mono", "rounded"), weight override.
+    public var size: Double = 1
+    public var font: String? = nil
+    public var weight: String? = nil
+    /// Words set in the quieter secondary color (Apple-style two-tone: "Your cards. *All together.*").
+    public var secondary: [String] = []
+    /// statement: reveal by lines (default) or words.
+    public var reveal: String? = nil
+    /// Seconds into a clip background where this scene starts (clip:<path> backgrounds).
+    public var clipStart: Double = 0
+    public init() {}
+    enum CodingKeys: String, CodingKey { case start, duration, style, text, lines, sub, accent, marker, times, background, color, accentColor, align, value, prefix, suffix, icon, cta, transition, transitionDuration, size, font, weight, secondary, reveal, clipStart }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self); let z = TextScene()
+        start = try c.v(.start, z.start); duration = try c.v(.duration, z.duration); style = try c.v(.style, z.style)
+        text = try c.decodeIfPresent(String.self, forKey: .text); lines = try c.decodeIfPresent([String].self, forKey: .lines)
+        sub = try c.decodeIfPresent(String.self, forKey: .sub); accent = try c.v(.accent, z.accent); marker = try c.v(.marker, z.marker)
+        times = try c.decodeIfPresent([Double].self, forKey: .times); background = try c.v(.background, z.background)
+        color = try c.decodeIfPresent(String.self, forKey: .color); accentColor = try c.decodeIfPresent(String.self, forKey: .accentColor)
+        align = try c.v(.align, z.align); value = try c.decodeIfPresent(Double.self, forKey: .value)
+        prefix = try c.decodeIfPresent(String.self, forKey: .prefix); suffix = try c.decodeIfPresent(String.self, forKey: .suffix)
+        icon = try c.decodeIfPresent(String.self, forKey: .icon); cta = try c.decodeIfPresent(String.self, forKey: .cta)
+        transition = try c.v(.transition, z.transition); transitionDuration = try c.v(.transitionDuration, z.transitionDuration)
+        size = try c.v(.size, z.size); font = try c.decodeIfPresent(String.self, forKey: .font); weight = try c.decodeIfPresent(String.self, forKey: .weight)
+        secondary = try c.v(.secondary, z.secondary); reveal = try c.decodeIfPresent(String.self, forKey: .reveal)
+        clipStart = try c.v(.clipStart, z.clipStart)
+    }
+    public var end: Double { start + duration }
+    public var allLines: [String] { lines ?? (text ?? "").components(separatedBy: "\n").filter { !$0.isEmpty } }
 }
 
 // MARK: - Geometry primitives

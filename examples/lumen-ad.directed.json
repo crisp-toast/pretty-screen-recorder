@@ -1,0 +1,108 @@
+{
+  "name": "lumen-directed",
+  "url": "demo-app/index.html",
+  "device": "desktop",
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "audio": {
+    "mode": "both",
+    "voice": {
+      "speed": 1.04
+    },
+    "music": {
+      "find": {
+        "mood": "upbeat",
+        "bpm": [
+          100,
+          125
+        ]
+      }
+    },
+    "sync": "beats"
+  },
+  "beats": [
+    {
+      "scene": {
+        "style": "punch",
+        "text": "Plan. Focus. Done.",
+        "accent": [
+          "Done."
+        ]
+      },
+      "say": "Your day, finally calm."
+    },
+    {
+      "say": "Tap New task to capture anything.",
+      "do": [
+        {
+          "click": "#new",
+          "why": "open the quick-capture composer",
+          "at": "word:New"
+        }
+      ]
+    },
+    {
+      "say": "Type it in plain words,",
+      "do": [
+        {
+          "type": {
+            "selector": "#taskInput",
+            "text": "Film the launch teaser"
+          },
+          "why": "show how fast capture is",
+          "at": "start"
+        }
+      ]
+    },
+    {
+      "say": "and it's saved the moment you hit Add.",
+      "do": [
+        {
+          "click": "#add",
+          "why": "save the new task",
+          "at": "word:Add"
+        }
+      ]
+    },
+    {
+      "say": "Check things off as you go.",
+      "do": [
+        {
+          "click": "text=Record App Store preview",
+          "why": "complete a task to show progress",
+          "at": "word:Check"
+        }
+      ]
+    },
+    {
+      "say": "And find anything instantly.",
+      "do": [
+        {
+          "type": {
+            "selector": "#search",
+            "text": "market"
+          },
+          "why": "show search filtering",
+          "at": "word:find"
+        }
+      ]
+    },
+    {
+      "say": "Lumen. Free on the App Store.",
+      "scene": {
+        "style": "lockup"
+      }
+    }
+  ],
+  "brand": {
+    "name": "Lumen",
+    "colors": [
+      "#5B5BF0",
+      "#00B3A6"
+    ],
+    "tagline": "The calm way to plan your day.",
+    "cta": "Free on the App Store"
+  }
+}
